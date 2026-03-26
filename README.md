@@ -159,7 +159,7 @@ Toggle each indicator with a checkbox. Some indicators have adjustable parameter
 
 Subplots (RSI, MACD, Stochastic, Williams %R, ADX, ATR) appear as separate rows below the main price chart. The chart height adjusts automatically.
 
-At the bottom, the **ML Predictions** section shows the XGBoost model's next-day price direction forecast (see [ML Price Direction Predictor](#ml-price-direction-predictor)).
+At the bottom, the **ML Predictions** section auto-discovers available models (currently XGBoost and LSTM) and shows each model's next-day price direction forecast (see [ML Price Direction Predictor](#ml-price-direction-predictor)).
 
 ---
 
@@ -317,7 +317,10 @@ When active, red square markers appear at the lowest price level on the chart, a
 
 ## ML Price Direction Predictor
 
-The app includes an **XGBoost classifier** that predicts whether tomorrow's close will be **higher (Up)** or **lower (Down)** than today's close.
+The app includes auto-discovered direction models that predict whether tomorrow's close will be **higher (Up)** or **lower (Down)** than today's close:
+
+- **XGBoost classifier** (`ml/xgboost_direction.py`)
+- **PyTorch LSTM sequence model** (`ml/lstm_direction.py`)
 
 ### How it works
 
@@ -325,7 +328,9 @@ The app includes an **XGBoost classifier** that predicts whether tomorrow's clos
    - 11 technical indicators: SMA(20), EMA(12), RSI(14), MACD, MACD Histogram, MACD Signal, Bollinger Lower/Mid/Upper/Bandwidth/%-B
    - 5 derived features: 1-day return, 5-day return, 10-day rolling volatility, price vs. SMA ratio, volume vs. 20-day average ratio
 
-2. **Training**: Trains on all available data except the last 5 rows. Uses `XGBClassifier` with 100 trees, max depth 4, learning rate 0.1.
+2. **Training**:
+   - XGBoost trains on labeled rows with a chronological holdout split.
+   - LSTM builds sliding-window sequences over the same indicator feature set.
 
 3. **Output**: Displays in the Technicals tab:
    - **Next-Day Prediction**: Up or Down
@@ -335,14 +340,15 @@ The app includes an **XGBoost classifier** that predicts whether tomorrow's clos
 
 ### Requirements
 
-- Minimum **60 data rows** after indicator warm-up (use a 3-month or longer period)
-- Short periods (1 day, 5 days, 1 month) will show an error message explaining the requirement
+- XGBoost: minimum **60 data rows** after indicator warm-up
+- LSTM: minimum **120 data rows** after indicator warm-up
+- Short periods (1 day, 5 days, 1 month) may show a model error due to insufficient rows
 
 ### Important notes
 
 - This is a **demonstration model**, not financial advice
-- Train accuracy will be high (the model overfits training data by design for demonstration)
-- The model retrains from scratch on every page load (no saved weights)
+- Models retrain from scratch on every page load (no saved weights/checkpoints yet)
+- `ml/__init__.py` is resilient: if one model backend fails to import, other models still load
 
 ---
 
@@ -387,7 +393,7 @@ app.py (Streamlit entry point)
       indicators/technical.py  -->  charts/price.py (Plotly)
         |
         v
-      ml/xgboost_direction.py  -->  (auto-discovered by technicals page)
+      ml/xgboost_direction.py + ml/lstm_direction.py  -->  (auto-discovered by technicals page)
          (ModelProvider ABC)
 ```
 
@@ -457,6 +463,8 @@ app.py (Streamlit entry point)
 | **"Failed to get ticker" / "possibly delisted"** | Yahoo Finance rate limiting. Wait a moment and reload. The cache prevents this on subsequent loads. |
 | **Empty charts** | Check that the ticker is valid and the period/interval combination returns data. Very short intraday periods may have no data outside market hours. |
 | **ML model shows "Model error"** | Use a period of 3 months or longer. The model needs at least 60 rows of data after indicator warm-up. |
+| **Only one ML model appears** | This can happen if another backend is unavailable. The model registry skips failed imports so remaining models still load. |
+| **XGBoost fails to load on macOS (`libxgboost.dylib` / `libomp`)** | Install OpenMP runtime: `brew install libomp`, then restart your shell/IDE and rerun. |
 | **Ichimoku Cloud not showing** | Ichimoku requires approximately 52+ bars of data. Use a 3-month or longer period. |
 | **Port 8501 already in use** | Stop other Streamlit instances: `pkill -f "streamlit run"` or use `streamlit run app.py --server.port 8502` |
 | **Docker build fails** | Ensure Docker Desktop is running. Run `docker compose up --build` to rebuild. |
@@ -468,7 +476,8 @@ app.py (Streamlit entry point)
 
 See `CLAUDE.md` for the full phased roadmap. Upcoming phases:
 
-- **Phase 3**: ML Model Suite (LightGBM, CatBoost, Ensemble, LSTM, Temporal Fusion Transformer)
+- **Phase 3**: ML Model Suite (LightGBM, CatBoost, Ensemble, Temporal Fusion Transformer)
+- **Phase 3C status**: LSTM baseline implemented (further tuning/checkpointing pending)
 - **Phase 4**: Risk & Portfolio Analytics (Sharpe, VaR, GARCH, portfolio optimization)
 - **Phase 5**: Sentiment Analysis (FinBERT, news, social media, SEC filings)
 - **Phase 6**: Alternative Data (options flow, insider trading, short interest)
@@ -490,6 +499,7 @@ See `CLAUDE.md` for the full phased roadmap. Upcoming phases:
 | scipy | >= 1.11.0 | Support/resistance peak detection |
 | xgboost | >= 2.0.0 | ML price direction model |
 | scikit-learn | >= 1.3.0 | ML utilities |
+| torch | >= 2.3.0 | LSTM sequence model backend |
 
 ---
 

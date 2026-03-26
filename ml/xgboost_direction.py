@@ -9,6 +9,8 @@ Important output columns:
 - Prob_Up: raw probability that the next day is Up
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
@@ -60,6 +62,13 @@ class XGBoostDirection(ModelProvider):
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
             raise ValueError("No indicator columns found. Need at least SMA/EMA/RSI.")
+        missing = [c for c in self.FEATURE_COLS if c not in df.columns]
+        if missing:
+            warnings.warn(
+                f"XGBoostDirection: {len(missing)}/{len(self.FEATURE_COLS)} indicator columns "
+                f"missing ({', '.join(missing)}). Training on reduced feature set.",
+                stacklevel=2,
+            )
 
         # Add price-derived features
         df["Return_1d"] = df["Close"].pct_change()

@@ -14,6 +14,11 @@ def get_available_models() -> list[ModelProvider]:
     try:
         from ml.xgboost_direction import XGBoostDirection
         models.append(XGBoostDirection())
-    except ImportError:
-        pass  # xgboost not installed
+    except Exception:
+        pass  # xgboost unavailable or native library not loadable
+    try:
+        from ml.lstm_direction import LSTMDirection
+        models.append(LSTMDirection())
+    except Exception:
+        pass  # torch unavailable or model import failed
     return models
