@@ -19,7 +19,7 @@ The data layer uses the Strategy pattern to decouple the app from any specific s
 
 - `data/base.py` -- `DataProvider` ABC defines the contract: `get_quote()`, `get_history()`, `get_info()`, `search_ticker()`, `validate_ticker()`. Also contains the `Quote` dataclass for current price snapshots.
 - `data/yfinance_provider.py` -- Concrete implementation using yfinance (free, no API key)
-- `data/cache.py` -- Streamlit `@st.cache_data` wrappers with TTLs (5min quotes, 1hr history, 24hr company info)
+- `data/cache.py` -- Streamlit `@st.cache_data` wrappers with TTLs (5min quotes, 1hr history, 24hr company info, 15s live mode)
 - `data/__init__.py` -- `get_provider()` factory that reads `DATA_PROVIDER` from config/env
 
 **To add a new data provider:**
@@ -41,11 +41,14 @@ Functions: `add_sma()`, `add_ema()`, `add_rsi()`, `add_macd()`, `add_bollinger()
 
 ### Pages (Streamlit Tabs)
 Each page module exports a `render()` function called by `app.py` inside the appropriate tab context:
+- `pages/__init__.py` -- Shared `render_timeframe_buttons()` widget used by all chart pages
 - `pages/overview.py` -- Current quote, key metrics, mini sparkline chart
 - `pages/technicals.py` -- Full interactive chart, indicator checkboxes/sliders, RSI/MACD subplots
 - `pages/financials.py` -- P/E, EPS, dividend yield, beta, 52-week range, revenue, profit margin
 - `pages/comparison.py` -- Multi-ticker selector (up to 5), normalized price comparison, metrics table
 - `pages/volume.py` -- Volume bars with MA overlay, volume-price correlation, day-of-week patterns
+
+All chart pages include timeframe preset buttons and auto-refresh support via `@st.fragment(run_every=...)`.
 
 ### ML Extension Points (Stubs)
 - `ml/base.py` -- `ModelProvider` ABC: `predict(df) -> df`, `get_name()`, `get_description()`
@@ -63,7 +66,7 @@ yfinance API (or other provider)
        |
        v  data/yfinance_provider.py (DataProvider ABC)
        |
-       v  data/cache.py (@st.cache_data wrappers)
+       v  data/cache.py (@st.cache_data wrappers, 15s TTL in live mode)
        |
        +------> pages/overview.py -----> charts/price.py (line chart)
        |
@@ -78,6 +81,9 @@ yfinance API (or other provider)
        +------> pages/comparison.py --> charts/comparison.py (normalized overlay)
        |
        +------> pages/volume.py -----> charts/volume.py (volume bars + profile)
+
+All chart pages use @st.fragment(run_every=...) for live auto-refresh.
+Timeframe preset buttons in each page update session_state and trigger st.rerun().
 ```
 
 ## Project Structure
@@ -89,15 +95,15 @@ stock-analysis/
 ├── Dockerfile                 # python:3.12-slim, no C deps needed
 ├── docker-compose.yml         # port 8501, volume mount for dev hot-reload
 ├── requirements.txt           # streamlit, yfinance, pandas, pandas-ta, plotly, numpy
-├── config.py                  # Defaults, color palette, indicator params, DATA_PROVIDER
-├── app.py                     # Streamlit entry: page config, sidebar, st.tabs routing
+├── config.py                  # Defaults, color palette, indicator params, DATA_PROVIDER, timeframe presets, auto-refresh
+├── app.py                     # Streamlit entry: page config, sidebar (incl. live refresh), st.tabs routing
 ├── CLAUDE.md
 │
 ├── data/
 │   ├── __init__.py            # get_provider() factory
 │   ├── base.py                # DataProvider ABC + Quote dataclass
 │   ├── yfinance_provider.py   # yfinance implementation
-│   └── cache.py               # @st.cache_data wrappers (5min/1hr/24hr TTLs)
+│   └── cache.py               # @st.cache_data wrappers (5min/1hr/24hr TTLs + 15s live)
 │
 ├── indicators/
 │   ├── __init__.py
@@ -110,7 +116,7 @@ stock-analysis/
 │   └── comparison.py          # Normalized multi-ticker chart
 │
 ├── pages/
-│   ├── __init__.py
+│   ├── __init__.py            # Shared render_timeframe_buttons() widget
 │   ├── overview.py            # Quote + metrics + mini chart
 │   ├── technicals.py          # Full chart + indicator controls + ML overlay hook
 │   ├── financials.py          # Key financial metrics table
@@ -171,7 +177,10 @@ scikit-learn>=1.3.0
 ## Notes
 
 - Uses `st.tabs` (not Streamlit multipage) -- all tabs share sidebar state via `st.session_state`
-- Sidebar state keys: `selected_ticker`, `period`, `interval`, `comparison_tickers`
+- Sidebar state keys: `selected_ticker`, `period`, `interval`, `comparison_tickers`, `auto_refresh`, `auto_refresh_seconds`
+- Timeframe preset buttons (1D/5D/1M/3M/6M/1Y/5Y/Max) set both `period` and `interval` in session state and call `st.rerun()`; the sidebar dropdowns sync from session state
+- Auto-refresh uses `@st.fragment(run_every=timedelta(...))` to periodically re-execute chart sections without full page rerun; live cache functions (`get_history_live`, `get_quote_live`) have 15s TTL vs normal 1hr/5min
+- Market status (Open/Closed) is detected from US Eastern time (9:30 AM - 4:00 PM ET, weekdays) via `zoneinfo`
 - Config defaults for indicators: SMA(20), EMA(12), RSI(14), MACD(12/26/9), Bollinger(20, 2.0)
 - yfinance search API: `yfinance.Search(query).quotes` (available in 1.x+)
 - Use `ticker.fast_info` for quick price lookups (attribute access, not `.get()`), `ticker.info` for full fundamentals
@@ -192,6 +201,78 @@ All Phase 1 code is implemented and the app launches. yfinance upgraded to 1.2.0
 - **Technicals page** reorganized with expanders: Trend Overlays, Bands & Channels, Momentum Oscillators, Trend Strength & Volatility, Patterns & Levels
 - **Volume page** enhanced with OBV, A/D Line, and CMF charts
 - All indicators are pure functions in `indicators/technical.py`, all chart rendering in `charts/price.py`
+
+## Phase 2.5 Status: COMPLETE — Timeframe Presets & Live Refresh
+
+### What was built
+- **Timeframe preset buttons** — 8 quick-select buttons (1D, 5D, 1M, 3M, 6M, 1Y, 5Y, Max) rendered above charts on all pages via shared `render_timeframe_buttons()` in `pages/__init__.py`. Active preset highlighted with `type="primary"`. Each preset sets both period and interval (e.g., 1D = period `1d` + interval `5m`). Buttons sync with sidebar dropdowns through `st.session_state`.
+- **Live auto-refresh** — sidebar toggle with configurable interval (10s, 30s, 1m, 5m). Uses `@st.fragment(run_every=timedelta(...))` to re-execute chart sections without full page rerun. Indicator controls on the Technicals page are outside the fragment (no flicker); chart data + rendering is inside (updates live).
+- **Live cache functions** — `get_history_live()` and `get_quote_live()` in `data/cache.py` with 15-second TTL (vs 1hr/5min for normal cached versions). Used automatically when auto-refresh is enabled.
+- **Market status indicator** — sidebar shows "Market: Open" or "Market: Closed" based on US Eastern time (9:30 AM - 4:00 PM ET, weekdays) via `zoneinfo.ZoneInfo`.
+- **Session state sync** — sidebar period/interval dropdowns read their default index from `st.session_state`, enabling bidirectional sync with timeframe preset buttons.
+
+---
+
+## Phase 2.6: Tab-Specific Sidebar Controls
+
+### Problem
+The sidebar in `app.py` only contains global controls (ticker search, period/interval, auto-refresh) that are identical across all tabs. Each tab's settings (indicator toggles, chart options, parameter sliders) are buried in in-page expanders within the main content area, making them harder to access.
+
+### Solution
+Restructure the sidebar so global controls stay at the top and **tab-specific controls appear below** based on which tab is active. Each page module exports a `render_sidebar()` function. Tab detection uses `set_active_page()` since `st.tabs()` has no native selection state API.
+
+### Architecture
+- `pages/__init__.py` adds `ACTIVE_PAGE_KEY`, `set_active_page(module_name)`, and `get_active_page()` to track the active tab via session state
+- Each page's `render()` calls `set_active_page()` at entry via a `@_set_active` decorator
+- `app.py` calls the active page's `render_sidebar(provider)` from within the sidebar context, routed by `pages.get_active_page()`
+- All tab-specific session state keys use prefixes to avoid collisions (`tech_`, `volume_`, `overview_`, `financials_`, `compare_`)
+
+### Session State Keys (new)
+| Key | Tab | Purpose |
+|-----|-----|---------|
+| `active_page` | Global | Currently active page module name |
+| `overview_show_vol` | Overview | Volume overlay toggle |
+| `overview_show_ma` | Overview | MA lines on price chart toggle |
+| `tech_show_sma`, `tech_sma_period` | Technicals | SMA toggle + period |
+| `tech_show_ema`, `tech_ema_period` | Technicals | EMA toggle + period |
+| `tech_show_vwap`, `tech_show_supertrend`, `tech_show_ichimoku` | Technicals | Additional trend overlays |
+| `tech_show_bb`, `tech_bb_period`, `tech_bb_std` | Technicals | Bollinger Bands toggle + params |
+| `tech_show_keltner`, `tech_show_squeeze` | Technicals | Keltner Channels, Bollinger Squeeze |
+| `tech_show_rsi`, `tech_rsi_period` | Technicals | RSI toggle + period |
+| `tech_show_macd`, `tech_show_stochastic`, `tech_show_williams_r` | Technicals | MACD, Stochastic, Williams %R |
+| `tech_show_adx`, `tech_show_atr` | Technicals | ADX, ATR toggles |
+| `tech_show_patterns`, `tech_show_sr`, `tech_show_fib` | Technicals | Patterns & Levels toggles |
+| `financials_view` | Financials | Annual / Quarterly / Trailing selector |
+| `saved_ticker_sets`, `compare_selected_set` | Comparison | Saved ticker set management |
+| `compare_benchmark`, `compare_normalization` | Comparison | Benchmark ticker, normalization method |
+| `volume_vol_ma_period`, `volume_profile_bins` | Volume | Volume MA period, profile bins sliders |
+| `volume_show_vwap`, `volume_spike_threshold` | Volume | VWAP overlay, volume spike threshold |
+
+### Files to Modify
+- `pages/__init__.py` — Add `set_active_page()` / `get_active_page()` utilities
+- `pages/overview.py` — Add `@_set_active` decorator + `render_sidebar()` with volume/MA toggles
+- `pages/technicals.py` — Add decorator; convert in-page indicator widgets to session-state-backed `key=` params; add `render_sidebar()` with all indicator controls in expanders
+- `pages/financials.py` — Add decorator + `render_sidebar()` with Annual/Quarterly/Trailing radio
+- `pages/comparison.py` — Add decorator + `render_sidebar()` with saved sets, benchmark, normalization
+- `pages/volume.py` — Add decorator + `render_sidebar()` with volume MA, profile bins, VWAP, spike threshold
+- `app.py` — Initialize `active_page` in session state defaults; route sidebar to active page's `render_sidebar()` after global controls
+
+### Tab-Specific Sidebar Controls by Page
+- **Overview**: Volume overlay toggle, MA lines toggle
+- **Technicals**: All indicator checkboxes and parameter sliders organized in 4 expanders (Trend Overlays, Bands & Channels, Momentum Oscillators, Patterns & Levels)
+- **Financials**: Annual / Quarterly / Trailing view selector
+- **Comparison**: Saved ticker sets dropdown, benchmark ticker input, normalization method selectbox
+- **Volume**: Volume MA period slider, volume profile bins slider, VWAP overlay toggle, volume spike threshold slider
+
+### Trade-off
+Since `st.tabs()` has no selection callback, the sidebar shows the **previous** tab's controls for one rerun cycle after switching. This is acceptable — the sidebar updates correctly on the next interaction.
+
+### Verification
+1. Run `streamlit run app.py` and switch between all 5 tabs — sidebar should update to show tab-specific controls
+2. Change a sidebar control (e.g., toggle SMA on Technicals) — main chart should reflect the change
+3. Switch tabs and come back — state should be retained
+4. Use timeframe preset buttons — should still sync with sidebar dropdowns
+5. Enable auto-refresh — chart should update live while sidebar controls remain functional
 
 ---
 

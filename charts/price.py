@@ -284,6 +284,12 @@ def create_candlestick(
             ), row=current_row, col=1)
         current_row += 1
 
+    # Tight Y-axis range for the price subplot
+    price_min = df["Low"].min()
+    price_max = df["High"].max()
+    padding = max((price_max - price_min) * 0.05, price_max * 0.002)
+    fig.update_yaxes(range=[price_min - padding, price_max + padding], row=1, col=1)
+
     # Layout
     total_height = 400 + 150 * len(subplots)
     fig.update_layout(
@@ -445,9 +451,16 @@ def create_line_chart(df: pd.DataFrame, title: str = "") -> go.Figure:
             name="Close",
         )
     )
+
+    # Tight Y-axis range so short timeframes don't look flat
+    price_min = df["Close"].min()
+    price_max = df["Close"].max()
+    padding = max((price_max - price_min) * 0.05, price_max * 0.002)
+
     fig.update_layout(
         title=title, height=300, template="plotly_white",
         margin=dict(l=50, r=20, t=40, b=20),
         xaxis_title="", yaxis_title="Price ($)",
+        yaxis_range=[price_min - padding, price_max + padding],
     )
     return fig
