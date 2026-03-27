@@ -23,13 +23,22 @@ class XGBoostDirection(ModelProvider):
     """Predicts next-day price direction (up/down) using XGBoost."""
 
     FEATURE_COLS = [
+        # Phase 1 indicators
         "SMA_20", "EMA_12", "RSI_14",
         "MACD_12_26_9", "MACDh_12_26_9", "MACDs_12_26_9",
         "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
         "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
+        # Advanced indicators
+        "STOCHk_14_3_3", "STOCHd_14_3_3",
+        "ADX_14", "DMP_14", "DMN_14",
+        "ATR_14",
+        "ROC_10",
+        "MFI_14",
     ]
     MIN_TRAIN_ROWS = 60
-    HOLDOUT_ROWS = 5
+    HOLDOUT_ROWS = 30
+    EARLY_STOPPING_ROUNDS = 10
+    EARLY_STOP_FRAC = 0.15
 
     def get_name(self) -> str:
         return "XGBoost Direction"
@@ -37,26 +46,29 @@ class XGBoostDirection(ModelProvider):
     def get_description(self) -> str:
         return "Predicts next-day price direction (up/down) using technical indicators"
 
-    def _build_model(self) -> XGBClassifier:
-        return XGBClassifier(
-            n_estimators=200,
-            max_depth=3,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            min_child_weight=3,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
+    def _build_model(self, early_stopping: bool = False) -> XGBClassifier:
+        params = dict(
+            n_estimators=150,
+            max_depth=2,
+            learning_rate=0.03,
+            subsample=0.6,
+            colsample_bytree=0.5,
+            min_child_weight=8,
+            reg_alpha=1.0,
+            reg_lambda=3.0,
             eval_metric="logloss",
             random_state=42,
             verbosity=0,
         )
+        if early_stopping:
+            params["early_stopping_rounds"] = self.EARLY_STOPPING_ROUNDS
+        return XGBClassifier(**params)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        # Ensure all indicators are present
-        df = add_all(df)
+        # Ensure all indicators are present (including advanced for ML)
+        df = add_all(df, include_advanced=True)
 
         # Build feature matrix using only columns that exist
         available = [c for c in self.FEATURE_COLS if c in df.columns]
@@ -72,17 +84,29 @@ class XGBoostDirection(ModelProvider):
 
         # Add price-derived features
         df["Return_1d"] = df["Close"].pct_change()
+        df["Return_2d"] = df["Close"].pct_change(2)
+        df["Return_3d"] = df["Close"].pct_change(3)
         df["Return_5d"] = df["Close"].pct_change(5)
+        df["Return_10d"] = df["Close"].pct_change(10)
+        df["Return_20d"] = df["Close"].pct_change(20)
         df["Volatility_10d"] = df["Return_1d"].rolling(10).std()
         df["Price_vs_SMA"] = (df["Close"] / df["SMA_20"] - 1) if "SMA_20" in df.columns else np.nan
         df["Volume_Ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+        df["Gap_Return"] = df["Open"] / df["Close"].shift(1) - 1
+        df["Daily_Range"] = (df["High"] - df["Low"]) / df["Close"]
 
         feature_cols = available + [
             "Return_1d",
+            "Return_2d",
+            "Return_3d",
             "Return_5d",
+            "Return_10d",
+            "Return_20d",
             "Volatility_10d",
             "Price_vs_SMA",
             "Volume_Ratio",
+            "Gap_Return",
+            "Daily_Range",
         ]
 
         # Replace inf values before dropping missing rows
@@ -113,8 +137,13 @@ class XGBoostDirection(ModelProvider):
         split = max(self.MIN_TRAIN_ROWS, len(X) - self.HOLDOUT_ROWS)
         X_train, y_train = X[:split], y[:split]
 
-        eval_model = self._build_model()
-        eval_model.fit(X_train, y_train)
+        # Split training data further for early stopping
+        es_split = int(len(X_train) * (1 - self.EARLY_STOP_FRAC))
+        X_fit, y_fit = X_train[:es_split], y_train[:es_split]
+        X_es, y_es = X_train[es_split:], y_train[es_split:]
+
+        eval_model = self._build_model(early_stopping=True)
+        eval_model.fit(X_fit, y_fit, eval_set=[(X_es, y_es)], verbose=False)
 
         # Predict on labeled rows using the evaluation model
         prob_up = eval_model.predict_proba(X)[:, 1]
@@ -133,8 +162,14 @@ class XGBoostDirection(ModelProvider):
         df.loc[model_df.index, "Prob_Up"] = prob_up
 
         # Train a final model on all labeled data for the live next-day forecast
-        final_model = self._build_model()
-        final_model.fit(X, y)
+        # Use early stopping with the last portion as eval set
+        final_es_split = int(len(X) * (1 - self.EARLY_STOP_FRAC))
+        final_model = self._build_model(early_stopping=True)
+        final_model.fit(
+            X[:final_es_split], y[:final_es_split],
+            eval_set=[(X[final_es_split:], y[final_es_split:])],
+            verbose=False,
+        )
 
         # Predict the very last row (true next-day forecast)
         last_features = df.iloc[[-1]][feature_cols]

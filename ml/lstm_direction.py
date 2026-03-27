@@ -49,25 +49,32 @@ class LSTMDirection(ModelProvider):
     """Predicts next-day price direction (up/down) using an LSTM."""
 
     FEATURE_COLS = [
+        # Phase 1 indicators
         "SMA_20", "EMA_12", "RSI_14",
         "MACD_12_26_9", "MACDh_12_26_9", "MACDs_12_26_9",
         "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
         "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
+        # Advanced indicators
+        "STOCHk_14_3_3", "STOCHd_14_3_3",
+        "ADX_14", "DMP_14", "DMN_14",
+        "ATR_14",
+        "ROC_10",
+        "MFI_14",
     ]
 
     MIN_TRAIN_ROWS = 120
     HOLDOUT_ROWS = 30
     SEQ_LEN = 20
 
-    HIDDEN_SIZE = 32
+    HIDDEN_SIZE = 48
     NUM_LAYERS = 1
-    DROPOUT = 0.2
-    EPOCHS = 30
+    DROPOUT = 0.3
+    EPOCHS = 50
     LEARNING_RATE = 1e-3
     BATCH_SIZE = 32
-    PATIENCE = 5
+    PATIENCE = 8
     GRAD_CLIP = 1.0
-    WEIGHT_DECAY = 1e-5
+    WEIGHT_DECAY = 1e-4
 
     def get_name(self) -> str:
         return "LSTM Direction"
@@ -168,7 +175,7 @@ class LSTMDirection(ModelProvider):
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df = add_all(df)
+        df = add_all(df, include_advanced=True)
 
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
@@ -186,6 +193,8 @@ class LSTMDirection(ModelProvider):
         df["Volatility_10d"] = df["Return_1d"].rolling(10).std()
         df["Price_vs_SMA"] = (df["Close"] / df["SMA_20"] - 1) if "SMA_20" in df.columns else np.nan
         df["Volume_Ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+        df["Gap_Return"] = df["Open"] / df["Close"].shift(1) - 1
+        df["Daily_Range"] = (df["High"] - df["Low"]) / df["Close"]
 
         feature_cols = available + [
             "Return_1d",
@@ -193,6 +202,8 @@ class LSTMDirection(ModelProvider):
             "Volatility_10d",
             "Price_vs_SMA",
             "Volume_Ratio",
+            "Gap_Return",
+            "Daily_Range",
         ]
 
         df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)

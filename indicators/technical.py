@@ -165,6 +165,23 @@ def add_cmf(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     return df
 
 
+def add_roc(df: pd.DataFrame, period: int = 10) -> pd.DataFrame:
+    """Add Rate of Change (momentum velocity)."""
+    roc = ta.roc(df["Close"], length=period)
+    if roc is not None:
+        df[f"ROC_{period}"] = roc
+    return df
+
+
+def add_mfi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Add Money Flow Index (volume-weighted RSI)."""
+    mfi = ta.mfi(df["High"], df["Low"], df["Close"], df["Volume"],
+                 length=period)
+    if mfi is not None:
+        df[f"MFI_{period}"] = mfi
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Phase 2B: Candlestick pattern detection (pure Python, no TA-Lib)
 # ---------------------------------------------------------------------------
@@ -352,11 +369,21 @@ def detect_squeeze(df: pd.DataFrame) -> pd.DataFrame:
 # Convenience
 # ---------------------------------------------------------------------------
 
-def add_all(df: pd.DataFrame) -> pd.DataFrame:
-    """Add all default indicators to the DataFrame."""
+def add_all(df: pd.DataFrame, include_advanced: bool = False) -> pd.DataFrame:
+    """Add all default indicators to the DataFrame.
+
+    When *include_advanced* is True, also adds Stochastic, ADX, ATR, ROC,
+    and MFI -- used by ML models for expanded feature sets.
+    """
     df = add_sma(df)
     df = add_ema(df)
     df = add_rsi(df)
     df = add_macd(df)
     df = add_bollinger(df)
+    if include_advanced:
+        df = add_stochastic(df)
+        df = add_adx(df)
+        df = add_atr(df)
+        df = add_roc(df)
+        df = add_mfi(df)
     return df

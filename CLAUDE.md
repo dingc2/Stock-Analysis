@@ -29,7 +29,8 @@ A personal, extensible stock analysis platform built with Python and Streamlit, 
 `indicators/technical.py` contains pure functions that take an OHLCV DataFrame and return it with added columns. No Streamlit dependency, no side effects. Uses `pandas-ta` (pure Python, no C deps).
 
 Core: `add_sma()`, `add_ema()`, `add_rsi()`, `add_macd()`, `add_bollinger()`, `add_all()`
-Advanced: VWAP, Ichimoku, Supertrend, ADX, Stochastic, Williams %R, Keltner, ATR, OBV, A/D Line, CMF
+Advanced: VWAP, Ichimoku, Supertrend, ADX, Stochastic, Williams %R, Keltner, ATR, OBV, A/D Line, CMF, ROC, MFI
+`add_all(df, include_advanced=True)` adds core + Stochastic, ADX, ATR, ROC, MFI (used by ML models)
 Patterns: Doji, Hammer, Shooting Star, Engulfing, Morning/Evening Star (pure Python, no TA-Lib)
 Levels: Support/Resistance (scipy peak detection), Fibonacci retracement, Bollinger Squeeze
 
@@ -54,8 +55,17 @@ All chart pages include timeframe preset buttons (1D/5D/1M/3M/6M/1Y/5Y/Max) and 
 ### ML Models
 - `ml/base.py` -- `ModelProvider` ABC: `predict(df) -> df`, `get_name()`, `get_description()`
 - `ml/__init__.py` -- `get_available_models()` returns registered models; each import is isolated so one backend failure doesn't block others
-- `ml/xgboost_direction.py` -- XGBoost 1-day price direction classifier
-- `ml/lstm_direction.py` -- PyTorch LSTM 1-day price direction classifier with early stopping, gradient clipping, dropout regularization
+- `ml/xgboost_direction.py` -- XGBoost 1-day price direction classifier (30 features)
+- `ml/lstm_direction.py` -- PyTorch LSTM 1-day price direction classifier with early stopping, gradient clipping, dropout regularization (26 features)
+
+Both models use `add_all(df, include_advanced=True)` to compute indicators from `indicators/technical.py`.
+Both share 18 indicator columns: SMA, EMA, RSI, MACD (3), Bollinger (5), Stochastic (2), ADX+DI (3), ATR, ROC, MFI.
+XGBoost adds 12 derived features: Return_1d/2d/3d/5d/10d/20d, Volatility_10d, Price_vs_SMA, Volume_Ratio, Gap_Return, Daily_Range.
+LSTM adds 7 derived features: Return_1d/5d, Volatility_10d, Price_vs_SMA, Volume_Ratio, Gap_Return, Daily_Range.
+(XGBoost gets more lag returns because it has no sequence memory; LSTM learns temporal patterns from its 20-step window.)
+
+XGBoost hyperparameters: max_depth=2, n_estimators=150, lr=0.03, subsample=0.6, colsample_bytree=0.5, min_child_weight=8, reg_alpha=1.0, reg_lambda=3.0. Uses early stopping (10 rounds, 15% eval split) to prevent overfitting. HOLDOUT_ROWS=30.
+LSTM hyperparameters: hidden_size=48, num_layers=1, dropout=0.3, seq_len=20, epochs=50, lr=1e-3, patience=8, weight_decay=1e-4, grad_clip=1.0, batch_size=32.
 
 Both models output: `Pred_Direction` (1=Up, 0=Down), `Pred_Probability` (confidence), `Prob_Up` (raw P(Up)).
 Both set `df.attrs`: `train_accuracy`, `validation_accuracy`, `train_size`, `test_size`, `feature_cols`.
@@ -186,6 +196,7 @@ torch>=2.3.0
 - **Phase 2** -- Advanced indicators, candlestick patterns, support/resistance, XGBoost direction model
 - **Phase 2.5** -- Timeframe presets, live auto-refresh, market status indicator
 - **Phase 3C** -- LSTM baseline with early stopping, gradient clipping, dropout, isolated RNG, NaN-safe last-row prediction
+- **Phase 3C.1** -- Expanded feature sets (Stochastic, ADX, ATR, ROC, MFI + price-derived features), differentiated XGBoost (30 features) vs LSTM (26 features), XGBoost overfitting fix via early stopping + regularization tuning, LSTM hyperparameter calibration
 
 ## Phase 2.6: Tab-Specific Sidebar Controls (NOT STARTED)
 
@@ -193,11 +204,12 @@ Restructure sidebar so global controls stay at top and tab-specific controls app
 
 Trade-off: sidebar shows previous tab's controls for one rerun cycle after switching (no `st.tabs` selection callback).
 
-## Remaining ML Work (Phase 3C)
+## Remaining ML Work
 
 - Model persistence/checkpointing to avoid retraining on every rerun
 - Configurable sequence length/epochs from UI or config
 - Out-of-sample evaluation improvements (ROC-AUC, confusion matrix, rolling validation)
+- Feature importance display in UI (XGBoost supports this natively via `feature_importances_`)
 
 ## Future Roadmap
 
