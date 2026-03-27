@@ -40,14 +40,14 @@ Levels: Support/Resistance (scipy peak detection), Fibonacci retracement, Bollin
 - `charts/volume.py` -- Color-coded volume bars (green=up, red=down), volume profile
 - `charts/comparison.py` -- Normalized percentage-change overlay for multi-ticker comparison
 
-### Pages (Streamlit Tabs)
-Each page module exports a `render()` function called by `app.py` inside the appropriate tab context:
-- `pages/__init__.py` -- Shared `render_timeframe_buttons()` widget used by all chart pages
-- `pages/overview.py` -- Current quote, key metrics, mini sparkline chart
-- `pages/technicals.py` -- Full interactive chart, indicator checkboxes/sliders, RSI/MACD subplots, ML overlay hook
-- `pages/financials.py` -- P/E, EPS, dividend yield, beta, 52-week range, revenue, profit margin
-- `pages/comparison.py` -- Multi-ticker selector (up to 5), normalized price comparison, metrics table
-- `pages/volume.py` -- Volume bars with MA overlay, volume-price correlation, day-of-week patterns, OBV/AD/CMF
+### Views (Streamlit Tabs)
+Each view module exports a `render()` function called by `app.py` inside the appropriate tab context:
+- `views/__init__.py` -- Shared `render_timeframe_buttons()` widget used by all chart views
+- `views/overview.py` -- Current quote, key metrics, mini sparkline chart
+- `views/technicals.py` -- Full interactive chart, indicator checkboxes/sliders, RSI/MACD subplots, ML overlay hook
+- `views/financials.py` -- P/E, EPS, dividend yield, beta, 52-week range, revenue, profit margin
+- `views/comparison.py` -- Multi-ticker selector (up to 5), normalized price comparison, metrics table
+- `views/volume.py` -- Volume bars with MA overlay, volume-price correlation, day-of-week patterns, OBV/AD/CMF
 
 All chart pages include timeframe preset buttons (1D/5D/1M/3M/6M/1Y/5Y/Max) and auto-refresh support via `@st.fragment(run_every=...)`.
 
@@ -74,19 +74,19 @@ yfinance API (or other provider)
        |
        v  data/cache.py (@st.cache_data wrappers, 15s TTL in live mode)
        |
-       +------> pages/overview.py -----> charts/price.py (line chart)
+       +------> views/overview.py -----> charts/price.py (line chart)
        |
        +------> indicators/technical.py (shared feature engineering)
        |              |
-       |              +------> pages/technicals.py --> charts/price.py (candlestick + overlays)
+       |              +------> views/technicals.py --> charts/price.py (candlestick + overlays)
        |              |
        |              +------> ml/xgboost_direction.py, ml/lstm_direction.py
        |
-       +------> pages/financials.py (ticker.info dict)
+       +------> views/financials.py (ticker.info dict)
        |
-       +------> pages/comparison.py --> charts/comparison.py (normalized overlay)
+       +------> views/comparison.py --> charts/comparison.py (normalized overlay)
        |
-       +------> pages/volume.py -----> charts/volume.py (volume bars + profile)
+       +------> views/volume.py -----> charts/volume.py (volume bars + profile)
 ```
 
 ## Project Structure
@@ -114,7 +114,7 @@ stock-analysis/
 │   ├── price.py               # Candlestick + indicator overlays + subplots
 │   ├── volume.py              # Volume bars, volume profile
 │   └── comparison.py          # Normalized multi-ticker chart
-├── pages/
+├── views/
 │   ├── __init__.py            # Shared render_timeframe_buttons() widget
 │   ├── overview.py            # Quote + metrics + mini chart
 │   ├── technicals.py          # Full chart + indicator controls + ML overlay hook
@@ -189,7 +189,7 @@ torch>=2.3.0
 
 ## Phase 2.6: Tab-Specific Sidebar Controls (NOT STARTED)
 
-Restructure sidebar so global controls stay at top and tab-specific controls appear below based on active tab. Each page module exports `render_sidebar()`. Tab detection via `set_active_page()` since `st.tabs()` has no native selection state API. All tab-specific session state keys use prefixes (`tech_`, `volume_`, `overview_`, `financials_`, `compare_`).
+Restructure sidebar so global controls stay at top and tab-specific controls appear below based on active tab. Each view module exports `render_sidebar()`. Tab detection via `set_active_page()` since `st.tabs()` has no native selection state API. All tab-specific session state keys use prefixes (`tech_`, `volume_`, `overview_`, `financials_`, `compare_`).
 
 Trade-off: sidebar shows previous tab's controls for one rerun cycle after switching (no `st.tabs` selection callback).
 

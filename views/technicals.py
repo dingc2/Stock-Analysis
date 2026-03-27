@@ -10,7 +10,7 @@ from data.cache import get_history_cached, get_history_live
 from indicators import technical as ind
 from charts.price import create_candlestick
 from ml import get_available_models
-from pages import render_timeframe_buttons
+from views import render_timeframe_buttons
 
 
 def render(provider: DataProvider, ticker: str, period: str, interval: str):

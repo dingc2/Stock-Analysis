@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from data import get_provider
-from pages import overview, technicals, financials, comparison, volume
+from views import overview, technicals, financials, comparison, volume
 
 # Page config
 st.set_page_config(

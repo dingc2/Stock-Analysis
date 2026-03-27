@@ -7,7 +7,7 @@ import config
 from data.base import DataProvider
 from data.cache import get_history_cached, get_history_live, get_quote_cached, get_quote_live
 from charts.comparison import create_comparison_chart
-from pages import render_timeframe_buttons
+from views import render_timeframe_buttons
 
 
 def render(provider: DataProvider, ticker: str, period: str, interval: str):

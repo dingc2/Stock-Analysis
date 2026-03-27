@@ -10,7 +10,7 @@ from data.base import DataProvider
 from data.cache import get_history_cached, get_history_live
 from charts.volume import create_volume_chart, create_volume_profile, create_volume_price_chart
 from indicators.technical import add_obv, add_ad, add_cmf
-from pages import render_timeframe_buttons
+from views import render_timeframe_buttons
 
 
 def render(provider: DataProvider, ticker: str, period: str, interval: str):

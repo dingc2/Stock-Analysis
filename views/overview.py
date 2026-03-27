@@ -6,7 +6,7 @@ from datetime import timedelta
 from data.base import DataProvider
 from data.cache import get_quote_cached, get_quote_live, get_history_cached, get_history_live
 from charts.price import create_line_chart
-from pages import render_timeframe_buttons
+from views import render_timeframe_buttons
 
 
 def render(provider: DataProvider, ticker: str, period: str, interval: str):
