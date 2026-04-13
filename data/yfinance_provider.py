@@ -32,10 +32,39 @@ class YFinanceProvider(DataProvider):
         )
 
     def get_history(
-        self, ticker: str, period: str = "1y", interval: str = "1d"
+        self, ticker: str, period: str = "1y", interval: str = "1d", include_vix: bool = False
     ) -> pd.DataFrame:
         t = yf.Ticker(ticker)
         df = t.history(period=period, interval=interval)
+        
+        if include_vix:
+            try:
+                # Fetch long history to ensure we cover the input df
+                vix_t = yf.Ticker("^VIX")
+                vix_df = vix_t.history(period="5y", interval="1d")
+                if not vix_df.empty:
+                    vix_close = vix_df["Close"].rename("VIX_Close")
+                    
+                    # Robust index alignment: strip timezones and normalize to start of day
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_convert(None).normalize()
+                    else:
+                        df.index = df.index.normalize()
+                        
+                    if vix_close.index.tz is not None:
+                        vix_close.index = vix_close.index.tz_convert(None).normalize()
+                    else:
+                        vix_close.index = vix_close.index.normalize()
+                    
+                    df = df.join(vix_close, how="left")
+                    df["VIX_Close"] = df["VIX_Close"].ffill()
+                    df["VIX_10d_MA"] = df["VIX_Close"].rolling(10).mean()
+                    df["VIX_20d_MA"] = df["VIX_Close"].rolling(20).mean()
+                    df["VIX_30d_MA"] = df["VIX_Close"].rolling(30).mean()
+            except Exception as e:
+                import warnings
+                warnings.warn(f"YFinanceProvider: Failed to fetch VIX data: {e}", stacklevel=2)
+
         return df
 
     def get_info(self, ticker: str) -> dict:

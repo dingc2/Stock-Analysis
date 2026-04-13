@@ -18,31 +18,31 @@ def _get_quote(_provider: DataProvider, ticker: str) -> Quote:
 
 
 def get_history_cached(
-    provider: DataProvider, ticker: str, period: str = "1y", interval: str = "1d"
+    provider: DataProvider, ticker: str, period: str = "1y", interval: str = "1d", include_vix: bool = False
 ) -> pd.DataFrame:
     """Cached history lookup (1 hr TTL)."""
-    return _get_history(provider, ticker, period, interval)
+    return _get_history(provider, ticker, period, interval, include_vix)
 
 
 @st.cache_data(ttl=config.CACHE_TTL_HISTORY, show_spinner=False)
 def _get_history(
-    _provider: DataProvider, ticker: str, period: str, interval: str
+    _provider: DataProvider, ticker: str, period: str, interval: str, include_vix: bool = False
 ) -> pd.DataFrame:
-    return _provider.get_history(ticker, period=period, interval=interval)
+    return _provider.get_history(ticker, period=period, interval=interval, include_vix=include_vix)
 
 
 def get_history_live(
-    provider: DataProvider, ticker: str, period: str = "1y", interval: str = "1d"
+    provider: DataProvider, ticker: str, period: str = "1y", interval: str = "1d", include_vix: bool = False
 ) -> pd.DataFrame:
     """Live history lookup with short TTL for auto-refresh."""
-    return _get_history_live(provider, ticker, period, interval)
+    return _get_history_live(provider, ticker, period, interval, include_vix)
 
 
 @st.cache_data(ttl=config.CACHE_TTL_LIVE, show_spinner=False)
 def _get_history_live(
-    _provider: DataProvider, ticker: str, period: str, interval: str
+    _provider: DataProvider, ticker: str, period: str, interval: str, include_vix: bool = False
 ) -> pd.DataFrame:
-    return _provider.get_history(ticker, period=period, interval=interval)
+    return _provider.get_history(ticker, period=period, interval=interval, include_vix=include_vix)
 
 
 def get_quote_live(provider: DataProvider, ticker: str) -> Quote:

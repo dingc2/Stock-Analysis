@@ -324,13 +324,15 @@ The app includes auto-discovered direction models that predict whether tomorrow'
 
 ### How it works
 
-1. **Features** (16 total):
+1. **Features** (~25 total):
    - 11 technical indicators: SMA(20), EMA(12), RSI(14), MACD, MACD Histogram, MACD Signal, Bollinger Lower/Mid/Upper/Bandwidth/%-B
-   - 5 derived features: 1-day return, 5-day return, 10-day rolling volatility, price vs. SMA ratio, volume vs. 20-day average ratio
+   - **Fear & Greed Proxy** (derived from normalized VIX and RSI)
+   - Derived price features: 1-day return, 5-day return, 10-day rolling volatility, price vs. SMA ratio, volume vs. 20-day average ratio
 
 2. **Training**:
-   - XGBoost trains on labeled rows with a chronological holdout split.
+   - XGBoost trains on labeled rows with a chronological holdout split and uses early stopping, followed by a final full-dataset fit.
    - LSTM builds sliding-window sequences over the same indicator feature set.
+   - **Hyperparameters** for both models (e.g., layers, epochs, learning rate, depth) are easily configurable via `config.py`.
 
 3. **Output**: Displays in the Technicals tab:
    - **Next-Day Prediction**: Up or Down

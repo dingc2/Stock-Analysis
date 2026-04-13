@@ -105,3 +105,49 @@ CACHE_TTL_QUOTE = 300       # 5 minutes
 CACHE_TTL_HISTORY = 3600    # 1 hour
 CACHE_TTL_INFO = 86400      # 24 hours
 CACHE_TTL_LIVE = 15         # 15 seconds for live mode
+
+# Composite Signal Score weights (must sum to 1.0)
+# Each category contributes this fraction to the final -100..+100 score.
+# If a category has no computable indicators, its weight is redistributed
+# proportionally to the remaining categories.
+SIGNAL_WEIGHTS = {
+    "trend":    0.25,   # Price vs SMA/EMA, MACD histogram, ADX direction
+    "momentum": 0.25,   # RSI, Stochastic %K, MFI, ROC
+    "volume":   0.10,   # CMF, OBV slope
+    "pattern":  0.10,   # Candlestick pattern signal
+    "ml":       0.30,   # XGBoost + LSTM probability consensus
+}
+
+# Label thresholds for the composite score
+SIGNAL_THRESHOLDS = {
+    "strong_buy":  50,
+    "buy":         20,
+    "neutral_low": -20,
+    "sell":        -50,
+    # below sell threshold → "Strong Sell"
+}
+
+# ML Models Configuration
+# LSTM
+LSTM_HIDDEN_SIZE = 48
+LSTM_NUM_LAYERS = 1
+LSTM_DROPOUT = 0.3
+LSTM_EPOCHS = 50
+LSTM_LEARNING_RATE = 1e-3
+LSTM_BATCH_SIZE = 32
+LSTM_PATIENCE = 8
+LSTM_GRAD_CLIP = 1.0
+LSTM_WEIGHT_DECAY = 1e-4
+
+# XGBoost
+XGB_N_ESTIMATORS = 150
+XGB_MAX_DEPTH = 2
+XGB_LEARNING_RATE = 0.03
+XGB_SUBSAMPLE = 0.6
+XGB_COLSAMPLE_BYTREE = 0.5
+XGB_MIN_CHILD_WEIGHT = 8
+XGB_REG_ALPHA = 1.0
+XGB_REG_LAMBDA = 3.0
+XGB_EVAL_METRIC = "logloss"
+XGB_RANDOM_STATE = 42
+

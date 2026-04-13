@@ -108,7 +108,7 @@ stock-analysis/
 ├── Dockerfile                 # python:3.12-slim, no C deps needed
 ├── docker-compose.yml         # port 8501, volume mount for dev hot-reload
 ├── requirements.txt           # streamlit, yfinance, pandas, pandas-ta, plotly, numpy, xgboost, torch
-├── config.py                  # Defaults, color palette, indicator params, DATA_PROVIDER, timeframe presets
+├── config.py                  # Defaults, color palette, indicator params, ML hyperparameters, DATA_PROVIDER, timeframe presets
 ├── app.py                     # Streamlit entry: page config, sidebar (incl. live refresh), st.tabs routing
 ├── CLAUDE.md
 ├── data/
@@ -118,7 +118,9 @@ stock-analysis/
 │   └── cache.py               # @st.cache_data wrappers (5min/1hr/24hr TTLs + 15s live)
 ├── indicators/
 │   ├── __init__.py
-│   └── technical.py           # All indicators via pandas-ta + pure Python patterns
+│   ├── technical.py           # All indicators via pandas-ta + pure Python patterns
+│   ├── composite.py           # Composite Signal Score calculator
+│   └── ml_features.py         # ML-specific feature engineering (Fear/Greed, volatility, etc.)
 ├── charts/
 │   ├── __init__.py
 │   ├── price.py               # Candlestick + indicator overlays + subplots

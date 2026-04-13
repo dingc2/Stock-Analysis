@@ -12,7 +12,9 @@ import warnings
 import numpy as np
 import pandas as pd
 
+import config
 from indicators.technical import add_all
+from indicators.ml_features import add_ml_features
 from ml.base import ModelProvider
 
 try:
@@ -60,21 +62,14 @@ class LSTMDirection(ModelProvider):
         "ATR_14",
         "ROC_10",
         "MFI_14",
+        # Fear indicators (Layer 1-3)
+        "VIX_Close", "VIX_10d_MA", "VIX_20d_MA", "VIX_30d_MA",
+        "Fear_Greed_Proxy", "Sentiment_Score",
     ]
 
     MIN_TRAIN_ROWS = 120
     HOLDOUT_ROWS = 30
     SEQ_LEN = 20
-
-    HIDDEN_SIZE = 48
-    NUM_LAYERS = 1
-    DROPOUT = 0.3
-    EPOCHS = 50
-    LEARNING_RATE = 1e-3
-    BATCH_SIZE = 32
-    PATIENCE = 8
-    GRAD_CLIP = 1.0
-    WEIGHT_DECAY = 1e-4
 
     def get_name(self) -> str:
         return "LSTM Direction"
@@ -109,14 +104,14 @@ class LSTMDirection(ModelProvider):
 
         model = _LSTMBinaryClassifier(
             input_size=x_train.shape[-1],
-            hidden_size=self.HIDDEN_SIZE,
-            num_layers=self.NUM_LAYERS,
-            dropout=self.DROPOUT,
+            hidden_size=config.LSTM_HIDDEN_SIZE,
+            num_layers=config.LSTM_NUM_LAYERS,
+            dropout=config.LSTM_DROPOUT,
         )
         model.train()
 
         optimizer = torch.optim.Adam(
-            model.parameters(), lr=self.LEARNING_RATE, weight_decay=self.WEIGHT_DECAY,
+            model.parameters(), lr=config.LSTM_LEARNING_RATE, weight_decay=config.LSTM_WEIGHT_DECAY,
         )
         criterion = nn.BCEWithLogitsLoss()
 
@@ -133,11 +128,11 @@ class LSTMDirection(ModelProvider):
         wait = 0
 
         n = x_t.shape[0]
-        for _ in range(self.EPOCHS):
+        for _ in range(config.LSTM_EPOCHS):
             model.train()
             order = torch.randperm(n, generator=g)
-            for start in range(0, n, self.BATCH_SIZE):
-                batch_idx = order[start : start + self.BATCH_SIZE]
+            for start in range(0, n, config.LSTM_BATCH_SIZE):
+                batch_idx = order[start : start + config.LSTM_BATCH_SIZE]
                 xb = x_t[batch_idx]
                 yb = y_t[batch_idx]
 
@@ -145,7 +140,7 @@ class LSTMDirection(ModelProvider):
                 logits = model(xb)
                 loss = criterion(logits, yb)
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.GRAD_CLIP)
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.LSTM_GRAD_CLIP)
                 optimizer.step()
 
             if has_val:
@@ -158,7 +153,7 @@ class LSTMDirection(ModelProvider):
                     wait = 0
                 else:
                     wait += 1
-                    if wait >= self.PATIENCE:
+                    if wait >= config.LSTM_PATIENCE:
                         break
 
         if best_state is not None:
@@ -176,6 +171,7 @@ class LSTMDirection(ModelProvider):
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df = add_all(df, include_advanced=True)
+        df = add_ml_features(df)
 
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
@@ -187,14 +183,6 @@ class LSTMDirection(ModelProvider):
                 f"missing ({', '.join(missing)}). Training on reduced feature set.",
                 stacklevel=2,
             )
-
-        df["Return_1d"] = df["Close"].pct_change()
-        df["Return_5d"] = df["Close"].pct_change(5)
-        df["Volatility_10d"] = df["Return_1d"].rolling(10).std()
-        df["Price_vs_SMA"] = (df["Close"] / df["SMA_20"] - 1) if "SMA_20" in df.columns else np.nan
-        df["Volume_Ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-        df["Gap_Return"] = df["Open"] / df["Close"].shift(1) - 1
-        df["Daily_Range"] = (df["High"] - df["Low"]) / df["Close"]
 
         feature_cols = available + [
             "Return_1d",

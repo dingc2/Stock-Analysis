@@ -32,11 +32,12 @@ class DataProvider(ABC):
 
     @abstractmethod
     def get_history(
-        self, ticker: str, period: str = "1y", interval: str = "1d"
+        self, ticker: str, period: str = "1y", interval: str = "1d", include_vix: bool = False
     ) -> pd.DataFrame:
         """Get historical OHLCV data. Returns a DataFrame with columns:
         Open, High, Low, Close, Volume (and optionally Adj Close).
         Index is DatetimeIndex.
+        If include_vix is True, appending VIX_Close and its moving averages.
         """
 
     @abstractmethod

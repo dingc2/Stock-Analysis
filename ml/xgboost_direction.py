@@ -15,8 +15,10 @@ import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier
 
+import config
 from ml.base import ModelProvider
 from indicators.technical import add_all
+from indicators.ml_features import add_ml_features
 
 
 class XGBoostDirection(ModelProvider):
@@ -34,6 +36,9 @@ class XGBoostDirection(ModelProvider):
         "ATR_14",
         "ROC_10",
         "MFI_14",
+        # Fear indicators (Layer 1-3) inspired by LosingLoonies
+        "VIX_Close", "VIX_10d_MA", "VIX_20d_MA", "VIX_30d_MA",
+        "Fear_Greed_Proxy", "Sentiment_Score",
     ]
     MIN_TRAIN_ROWS = 60
     HOLDOUT_ROWS = 30
@@ -46,18 +51,18 @@ class XGBoostDirection(ModelProvider):
     def get_description(self) -> str:
         return "Predicts next-day price direction (up/down) using technical indicators"
 
-    def _build_model(self, early_stopping: bool = False) -> XGBClassifier:
+    def _build_model(self, early_stopping: bool = False, n_estimators: int | None = None) -> XGBClassifier:
         params = dict(
-            n_estimators=150,
-            max_depth=2,
-            learning_rate=0.03,
-            subsample=0.6,
-            colsample_bytree=0.5,
-            min_child_weight=8,
-            reg_alpha=1.0,
-            reg_lambda=3.0,
-            eval_metric="logloss",
-            random_state=42,
+            n_estimators=n_estimators or config.XGB_N_ESTIMATORS,
+            max_depth=config.XGB_MAX_DEPTH,
+            learning_rate=config.XGB_LEARNING_RATE,
+            subsample=config.XGB_SUBSAMPLE,
+            colsample_bytree=config.XGB_COLSAMPLE_BYTREE,
+            min_child_weight=config.XGB_MIN_CHILD_WEIGHT,
+            reg_alpha=config.XGB_REG_ALPHA,
+            reg_lambda=config.XGB_REG_LAMBDA,
+            eval_metric=config.XGB_EVAL_METRIC,
+            random_state=config.XGB_RANDOM_STATE,
             verbosity=0,
         )
         if early_stopping:
@@ -69,6 +74,7 @@ class XGBoostDirection(ModelProvider):
 
         # Ensure all indicators are present (including advanced for ML)
         df = add_all(df, include_advanced=True)
+        df = add_ml_features(df)
 
         # Build feature matrix using only columns that exist
         available = [c for c in self.FEATURE_COLS if c in df.columns]
@@ -81,19 +87,6 @@ class XGBoostDirection(ModelProvider):
                 f"missing ({', '.join(missing)}). Training on reduced feature set.",
                 stacklevel=2,
             )
-
-        # Add price-derived features
-        df["Return_1d"] = df["Close"].pct_change()
-        df["Return_2d"] = df["Close"].pct_change(2)
-        df["Return_3d"] = df["Close"].pct_change(3)
-        df["Return_5d"] = df["Close"].pct_change(5)
-        df["Return_10d"] = df["Close"].pct_change(10)
-        df["Return_20d"] = df["Close"].pct_change(20)
-        df["Volatility_10d"] = df["Return_1d"].rolling(10).std()
-        df["Price_vs_SMA"] = (df["Close"] / df["SMA_20"] - 1) if "SMA_20" in df.columns else np.nan
-        df["Volume_Ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-        df["Gap_Return"] = df["Open"] / df["Close"].shift(1) - 1
-        df["Daily_Range"] = (df["High"] - df["Low"]) / df["Close"]
 
         feature_cols = available + [
             "Return_1d",
@@ -108,9 +101,6 @@ class XGBoostDirection(ModelProvider):
             "Gap_Return",
             "Daily_Range",
         ]
-
-        # Replace inf values before dropping missing rows
-        df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
 
         # Target: 1 if next day close > today close, else 0
         # IMPORTANT: last row has no known next-day close, so target should be NaN, not 0
@@ -162,14 +152,10 @@ class XGBoostDirection(ModelProvider):
         df.loc[model_df.index, "Prob_Up"] = prob_up
 
         # Train a final model on all labeled data for the live next-day forecast
-        # Use early stopping with the last portion as eval set
-        final_es_split = int(len(X) * (1 - self.EARLY_STOP_FRAC))
-        final_model = self._build_model(early_stopping=True)
-        final_model.fit(
-            X[:final_es_split], y[:final_es_split],
-            eval_set=[(X[final_es_split:], y[final_es_split:])],
-            verbose=False,
-        )
+        # Extract best iteration from evaluation model and apply without early stopping
+        best_n_estimators = eval_model.best_iteration + 1 if hasattr(eval_model, 'best_iteration') else config.XGB_N_ESTIMATORS
+        final_model = self._build_model(early_stopping=False, n_estimators=best_n_estimators)
+        final_model.fit(X, y, verbose=False)
 
         # Predict the very last row (true next-day forecast)
         last_features = df.iloc[[-1]][feature_cols]

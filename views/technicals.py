@@ -94,9 +94,9 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
     def chart_section():
         try:
             if st.session_state.get("auto_refresh"):
-                df = get_history_live(provider, ticker, period=period, interval=interval)
+                df = get_history_live(provider, ticker, period=period, interval=interval, include_vix=True)
             else:
-                df = get_history_cached(provider, ticker, period=period, interval=interval)
+                df = get_history_cached(provider, ticker, period=period, interval=interval, include_vix=True)
         except Exception as e:
             st.error(f"Failed to fetch history for {ticker}: {e}")
             return
