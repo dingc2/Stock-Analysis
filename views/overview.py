@@ -67,14 +67,14 @@ def _make_gauge(score: float, label: str) -> go.Figure:
 # Sub-score breakdown bar
 # ---------------------------------------------------------------------------
 
-def _render_sub_score_bar(label: str, value: float | None, weight: float):
+def _render_sub_score_bar(label: str, value: float | None, weight: float, display_override: str | None = None):
     """Render a single sub-score row: label | mini bar | value."""
     if value is None or np.isnan(value):
         display = "N/A"
         bar_pct = 50            # centred
         bar_color = "#555"
     else:
-        display = f"{value:+.2f}"
+        display = display_override if display_override is not None else f"{value:+.2f}"
         bar_pct = int((value + 1) / 2 * 100)   # -1→0 %, +1→100 %
         bar_color = (
             "#00c853" if value >= 0.2 else
@@ -142,18 +142,19 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
 
     # Optionally run ML models
     ml_results: list[dict] = []
+    ml_errors: list[str] = []
     if include_ml:
         models = get_available_models()
         for model in models:
             try:
                 pred_df = model.predict(df)
-                last = pred_df.iloc[-1]
-                prob_up = last.get("Prob_Up") if hasattr(last, "get") else \
-                          (last["Prob_Up"] if "Prob_Up" in pred_df.columns else None)
+                last_pred = pred_df.iloc[-1]
+                prob_up = last_pred.get("Prob_Up") if hasattr(last_pred, "get") else \
+                          (last_pred["Prob_Up"] if "Prob_Up" in pred_df.columns else None)
                 if prob_up is not None and not pd.isna(prob_up):
                     ml_results.append({"prob_up": float(prob_up), "name": model.get_name()})
-            except Exception:
-                pass  # one failed model shouldn't block the score
+            except Exception as e:
+                ml_errors.append(f"{model.get_name()}: {str(e)}")
 
     df = compute_signal_score(df, ml_results=ml_results if ml_results else None)
 
@@ -163,6 +164,20 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
 
     import config as cfg
     weights = cfg.SIGNAL_WEIGHTS
+
+    # Calculate effective weights based on available scores
+    available_cols = []
+    if "Score_Trend" in df.columns and not pd.isna(last["Score_Trend"]): available_cols.append("trend")
+    if "Score_Momentum" in df.columns and not pd.isna(last["Score_Momentum"]): available_cols.append("momentum")
+    if "Score_Volume" in df.columns and not pd.isna(last["Score_Volume"]): available_cols.append("volume")
+    if "Score_Pattern" in df.columns and not pd.isna(last["Score_Pattern"]): available_cols.append("pattern")
+    if "Score_ML" in df.columns and not pd.isna(last["Score_ML"]): available_cols.append("ml")
+    
+    total_available_weight = sum(weights[k] for k in available_cols)
+    effective_weights = {
+        k: (weights[k] / total_available_weight) if total_available_weight > 0 else 0.0
+        for k in weights
+    }
 
     # Layout: gauge left, breakdown right
     g_col, b_col = st.columns([1, 1])
@@ -176,21 +191,26 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
         st.caption("Each bar shows the sub-score (-1 to +1). Weight = share of final score.")
 
         sub_map = [
-            ("Trend",    "Score_Trend",    weights["trend"]),
-            ("Momentum", "Score_Momentum", weights["momentum"]),
-            ("Volume",   "Score_Volume",   weights["volume"]),
-            ("Pattern",  "Score_Pattern",  weights["pattern"]),
-            ("ML Models","Score_ML",       weights["ml"]),
+            ("Trend",    "Score_Trend",    effective_weights["trend"]),
+            ("Momentum", "Score_Momentum", effective_weights["momentum"]),
+            ("Volume",   "Score_Volume",   effective_weights["volume"]),
+            ("Pattern",  "Score_Pattern",  effective_weights["pattern"]),
+            ("ML Models","Score_ML",       effective_weights["ml"]),
         ]
         for name, col, w in sub_map:
             val = float(last[col]) if col in df.columns and not pd.isna(last[col]) else None
-            _render_sub_score_bar(name, val, w)
+            override = "No pattern" if name == "Pattern" and val == 0.0 else None
+            _render_sub_score_bar(name, val, w, display_override=override)
 
         if ml_results:
             names = ", ".join(r["name"] for r in ml_results)
             st.caption(f"ML: {names}")
         elif include_ml:
-            st.caption("ML models unavailable — ML weight redistributed.")
+            if ml_errors:
+                error_str = " | ".join(ml_errors)
+                st.caption(f"ML models unavailable ({error_str}) — ML weight redistributed.")
+            else:
+                st.caption("ML models unavailable — ML weight redistributed.")
 
     # Interpretation guide (collapsible)
     with st.expander("How to read this score", expanded=False):

@@ -65,7 +65,7 @@ LSTM adds 7 derived features: Return_1d/5d, Volatility_10d, Price_vs_SMA, Volume
 (XGBoost gets more lag returns because it has no sequence memory; LSTM learns temporal patterns from its 20-step window.)
 
 XGBoost hyperparameters: max_depth=2, n_estimators=150, lr=0.03, subsample=0.6, colsample_bytree=0.5, min_child_weight=8, reg_alpha=1.0, reg_lambda=3.0. Uses early stopping (10 rounds, 15% eval split) to prevent overfitting. HOLDOUT_ROWS=30.
-LSTM hyperparameters: hidden_size=48, num_layers=1, dropout=0.3, seq_len=20, epochs=50, lr=1e-3, patience=8, weight_decay=1e-4, grad_clip=1.0, batch_size=32.
+LSTM hyperparameters: hidden_size=64, num_layers=1, dropout=0.2, seq_len=20, epochs=150, lr=2e-3, patience=15, weight_decay=1e-5, grad_clip=1.0, batch_size=32.
 
 Both models output: `Pred_Direction` (1=Up, 0=Down), `Pred_Probability` (confidence), `Prob_Up` (raw P(Up)).
 Both set `df.attrs`: `train_accuracy`, `validation_accuracy`, `train_size`, `test_size`, `feature_cols`.
@@ -199,6 +199,7 @@ torch>=2.3.0
 - **Phase 2.5** -- Timeframe presets, live auto-refresh, market status indicator
 - **Phase 3C** -- LSTM baseline with early stopping, gradient clipping, dropout, isolated RNG, NaN-safe last-row prediction
 - **Phase 3C.1** -- Expanded feature sets (Stochastic, ADX, ATR, ROC, MFI + price-derived features), differentiated XGBoost (30 features) vs LSTM (26 features), XGBoost overfitting fix via early stopping + regularization tuning, LSTM hyperparameter calibration
+- **Phase 3C.2** -- LSTM epoch alignment for consistent confidence scaling and hyperparameter retuning to boost signal.
 
 ## Phase 2.6: Tab-Specific Sidebar Controls (NOT STARTED)
 

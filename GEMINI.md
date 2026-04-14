@@ -10,7 +10,7 @@ This project is a personal, extensible stock analysis dashboard built with Pytho
     *   **Indicators Layer (`indicators/`):** Contains stateless pure functions for computing technical indicators (`technical.py`) and ML-specific features (`ml_features.py`). Shared between visualization and ML models to ensure feature consistency.
     *   **Charts Layer (`charts/`):** Interactive visualizations using Plotly (candlesticks, volume profiles, etc.).
     *   **Views (`views/`):** Modular components for Streamlit tabs (Overview, Technicals, Financials, etc.).
-    *   **ML Layer (`ml/`):** Pluggable model architecture (`ModelProvider` ABC). Includes XGBoost and LSTM direction classifiers. Hyperparameters are centralized in `config.py`.
+    *   **ML Layer (`ml/`):** Pluggable model architecture (`ModelProvider` ABC). Includes XGBoost and LSTM direction classifiers (with dynamic epoch alignment for consistent confidence scaling). Hyperparameters are centralized in `config.py`.
 
 ## Building and Running
 

@@ -5,7 +5,8 @@ def add_ml_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add advanced features used exclusively by ML models.
     
     Assumes `VIX_Close` and `RSI_14` may be present in the DataFrame.
-    Calculates Fear/Greed proxies, price returns, and volatility.
+    Calculates Fear/Greed proxies, price returns, volatility, and
+    normalised versions of price-scale indicators.
     Replaces infinities with np.nan to maintain ML compatibility.
     """
     df = df.copy()
@@ -19,10 +20,9 @@ def add_ml_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["Fear_Greed_Proxy"] = 50.0  # Neutral
 
-    # Layer 3: Social Sentiment (Stub/Mock for future integration)
-    df["Sentiment_Score"] = 0.0
-
-    # Add price-derived features
+    # ----------------------------------------------------------------
+    # Price-derived features
+    # ----------------------------------------------------------------
     if "Close" in df.columns:
         df["Return_1d"] = df["Close"].pct_change()
         df["Return_2d"] = df["Close"].pct_change(2)
@@ -37,6 +37,35 @@ def add_ml_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["Price_vs_SMA"] = np.nan
 
+    # ----------------------------------------------------------------
+    # Normalised price-scale indicators (ratios instead of raw values)
+    # ----------------------------------------------------------------
+    if "Close" in df.columns and "EMA_12" in df.columns:
+        df["Price_vs_EMA"] = (df["Close"] / df["EMA_12"] - 1)
+    else:
+        df["Price_vs_EMA"] = np.nan
+
+    # MACD components normalised by Close price so they are
+    # comparable across tickers / price levels.
+    for raw_col, norm_col in [
+        ("MACD_12_26_9", "MACD_Norm"),
+        ("MACDh_12_26_9", "MACDh_Norm"),
+        ("MACDs_12_26_9", "MACDs_Norm"),
+    ]:
+        if raw_col in df.columns and "Close" in df.columns:
+            df[norm_col] = df[raw_col] / df["Close"]
+        else:
+            df[norm_col] = np.nan
+
+    # ATR normalised by Close (percentage-based volatility measure)
+    if "ATR_14" in df.columns and "Close" in df.columns:
+        df["ATR_Norm"] = df["ATR_14"] / df["Close"]
+    else:
+        df["ATR_Norm"] = np.nan
+
+    # ----------------------------------------------------------------
+    # Volume and gap features
+    # ----------------------------------------------------------------
     if "Volume" in df.columns:
         df["Volume_Ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
 
@@ -46,6 +75,9 @@ def add_ml_features(df: pd.DataFrame) -> pd.DataFrame:
     if "High" in df.columns and "Low" in df.columns and "Close" in df.columns:
         df["Daily_Range"] = (df["High"] - df["Low"]) / df["Close"]
 
+    # ----------------------------------------------------------------
+    # Replace infinities before returning
+    # ----------------------------------------------------------------
     feature_cols = [
         "Return_1d",
         "Return_2d",
@@ -55,12 +87,16 @@ def add_ml_features(df: pd.DataFrame) -> pd.DataFrame:
         "Return_20d",
         "Volatility_10d",
         "Price_vs_SMA",
+        "Price_vs_EMA",
+        "MACD_Norm",
+        "MACDh_Norm",
+        "MACDs_Norm",
+        "ATR_Norm",
         "Volume_Ratio",
         "Gap_Return",
         "Daily_Range",
     ]
     
-    # Replace inf values before returning
     existing_cols = [col for col in feature_cols if col in df.columns]
     df[existing_cols] = df[existing_cols].replace([np.inf, -np.inf], np.nan)
 

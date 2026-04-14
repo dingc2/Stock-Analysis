@@ -20,6 +20,7 @@ from ml.base import ModelProvider
 try:
     import torch
     from torch import nn
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
 except ImportError as exc:  # pragma: no cover - handled by registry fallback
     raise ImportError("PyTorch is required for LSTMDirection") from exc
 
@@ -51,20 +52,17 @@ class LSTMDirection(ModelProvider):
     """Predicts next-day price direction (up/down) using an LSTM."""
 
     FEATURE_COLS = [
-        # Phase 1 indicators
-        "SMA_20", "EMA_12", "RSI_14",
-        "MACD_12_26_9", "MACDh_12_26_9", "MACDs_12_26_9",
-        "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
-        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
-        # Advanced indicators
+        # Momentum oscillators (already 0-100 or percentage-based)
+        "RSI_14",
         "STOCHk_14_3_3", "STOCHd_14_3_3",
         "ADX_14", "DMP_14", "DMN_14",
-        "ATR_14",
         "ROC_10",
         "MFI_14",
-        # Fear indicators (Layer 1-3)
+        # Bollinger relative metrics (unitless)
+        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
+        # Fear indicators (index-level, comparable across tickers)
         "VIX_Close", "VIX_10d_MA", "VIX_20d_MA", "VIX_30d_MA",
-        "Fear_Greed_Proxy", "Sentiment_Score",
+        "Fear_Greed_Proxy",
     ]
 
     MIN_TRAIN_ROWS = 120
@@ -98,7 +96,8 @@ class LSTMDirection(ModelProvider):
         seed: int,
         x_val: np.ndarray | None = None,
         y_val: np.ndarray | None = None,
-    ) -> _LSTMBinaryClassifier:
+        epochs: int | None = None,
+    ) -> tuple[_LSTMBinaryClassifier, int]:
         torch.manual_seed(seed)
         g = torch.Generator().manual_seed(seed)
 
@@ -115,10 +114,17 @@ class LSTMDirection(ModelProvider):
         )
         criterion = nn.BCEWithLogitsLoss()
 
+        # Learning rate scheduler — reduce LR on val loss plateau
+        has_val = x_val is not None and y_val is not None and len(x_val) > 0
+        scheduler = None
+        if has_val:
+            scheduler = ReduceLROnPlateau(
+                optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5,
+            )
+
         x_t = torch.tensor(x_train, dtype=torch.float32)
         y_t = torch.tensor(y_train, dtype=torch.float32)
 
-        has_val = x_val is not None and y_val is not None and len(x_val) > 0
         if has_val:
             x_v = torch.tensor(x_val, dtype=torch.float32)
             y_v = torch.tensor(y_val, dtype=torch.float32)
@@ -126,9 +132,11 @@ class LSTMDirection(ModelProvider):
         best_val_loss = float("inf")
         best_state = None
         wait = 0
+        best_epoch = 0
 
         n = x_t.shape[0]
-        for _ in range(config.LSTM_EPOCHS):
+        target_epochs = epochs if epochs is not None else config.LSTM_EPOCHS
+        for epoch in range(target_epochs):
             model.train()
             order = torch.randperm(n, generator=g)
             for start in range(0, n, config.LSTM_BATCH_SIZE):
@@ -147,9 +155,15 @@ class LSTMDirection(ModelProvider):
                 model.eval()
                 with torch.no_grad():
                     val_loss = criterion(model(x_v), y_v).item()
+
+                # Step the LR scheduler
+                if scheduler is not None:
+                    scheduler.step(val_loss)
+
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_state = copy.deepcopy(model.state_dict())
+                    best_epoch = epoch
                     wait = 0
                 else:
                     wait += 1
@@ -158,9 +172,11 @@ class LSTMDirection(ModelProvider):
 
         if best_state is not None:
             model.load_state_dict(best_state)
+        elif not has_val:
+            best_epoch = target_epochs - 1
 
         model.eval()
-        return model
+        return model, best_epoch
 
     def _predict_prob_up(self, model: _LSTMBinaryClassifier, x: np.ndarray) -> np.ndarray:
         with torch.no_grad():
@@ -175,7 +191,7 @@ class LSTMDirection(ModelProvider):
 
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
-            raise ValueError("No indicator columns found. Need at least SMA/EMA/RSI.")
+            raise ValueError("No indicator columns found. Need at least RSI/Stochastic.")
         missing = [c for c in self.FEATURE_COLS if c not in df.columns]
         if missing:
             warnings.warn(
@@ -184,11 +200,23 @@ class LSTMDirection(ModelProvider):
                 stacklevel=2,
             )
 
+        # Feature list matches XGBoost for parity — all normalised/unitless
         feature_cols = available + [
-            "Return_1d",
-            "Return_5d",
-            "Volatility_10d",
+            # Normalised indicator ratios (from ml_features)
             "Price_vs_SMA",
+            "Price_vs_EMA",
+            "MACD_Norm",
+            "MACDh_Norm",
+            "MACDs_Norm",
+            "ATR_Norm",
+            # Price-derived features (all percentage-based)
+            "Return_1d",
+            "Return_2d",
+            "Return_3d",
+            "Return_5d",
+            "Return_10d",
+            "Return_20d",
+            "Volatility_10d",
             "Volume_Ratio",
             "Gap_Return",
             "Daily_Range",
@@ -232,21 +260,33 @@ class LSTMDirection(ModelProvider):
         if len(x_train) < 20:
             raise ValueError("Not enough training sequences for LSTM. Try a longer period.")
 
-        eval_model = self._fit_model(x_train, y_train, seed=42, x_val=x_val, y_val=y_val)
+        eval_model, best_epoch = self._fit_model(x_train, y_train, seed=42, x_val=x_val, y_val=y_val)
 
-        prob_up = self._predict_prob_up(eval_model, seq_x)
-        preds = (prob_up >= 0.5).astype(int)
-        confidence = np.where(preds == 1, prob_up, 1.0 - prob_up)
-
+        # =====================================================================
+        # Predictions — OUT-OF-SAMPLE ONLY to prevent data leakage
+        # =====================================================================
         df["Pred_Direction"] = np.nan
         df["Pred_Probability"] = np.nan
         df["Prob_Up"] = np.nan
 
-        df.loc[seq_idx, "Pred_Direction"] = preds
-        df.loc[seq_idx, "Pred_Probability"] = confidence
-        df.loc[seq_idx, "Prob_Up"] = prob_up
+        # Only predict on validation sequences (eval_model never saw these)
+        if len(x_val) > 0:
+            val_prob_up = self._predict_prob_up(eval_model, x_val)
+            val_preds = (val_prob_up >= 0.5).astype(int)
+            val_confidence = np.where(val_preds == 1, val_prob_up, 1.0 - val_prob_up)
 
-        final_model = self._fit_model(seq_x, seq_y, seed=7)
+            val_seq_idx = seq_idx[~train_seq_mask]
+            df.loc[val_seq_idx, "Pred_Direction"] = val_preds
+            df.loc[val_seq_idx, "Pred_Probability"] = val_confidence
+            df.loc[val_seq_idx, "Prob_Up"] = val_prob_up
+
+        # =====================================================================
+        # Final model for live next-day forecast
+        # Retrained on ALL sequences with the same epoch count (using same
+        # seed for reproducibility).
+        # =====================================================================
+        final_epochs = best_epoch + 1
+        final_model, _ = self._fit_model(seq_x, seq_y, seed=42, epochs=final_epochs)
 
         # Last-row prediction: check the entire sequence for NaN, not just the last row
         all_features = df[feature_cols].to_numpy(dtype=np.float32)
@@ -262,13 +302,16 @@ class LSTMDirection(ModelProvider):
                 df.loc[df.index[-1], "Pred_Probability"] = last_conf
                 df.loc[df.index[-1], "Prob_Up"] = last_prob_up
 
+        # =====================================================================
+        # Metrics — clearly separated
+        # =====================================================================
         train_preds = (self._predict_prob_up(eval_model, x_train) >= 0.5).astype(int)
         train_acc = float((train_preds == y_train.astype(int)).mean())
 
         val_acc = np.nan
         if len(x_val) > 0:
-            val_preds = (self._predict_prob_up(eval_model, x_val) >= 0.5).astype(int)
-            val_acc = float((val_preds == y_val.astype(int)).mean())
+            val_preds_check = (self._predict_prob_up(eval_model, x_val) >= 0.5).astype(int)
+            val_acc = float((val_preds_check == y_val.astype(int)).mean())
 
         df.attrs["train_accuracy"] = train_acc
         df.attrs["validation_accuracy"] = val_acc

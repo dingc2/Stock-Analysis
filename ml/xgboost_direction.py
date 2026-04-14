@@ -25,20 +25,17 @@ class XGBoostDirection(ModelProvider):
     """Predicts next-day price direction (up/down) using XGBoost."""
 
     FEATURE_COLS = [
-        # Phase 1 indicators
-        "SMA_20", "EMA_12", "RSI_14",
-        "MACD_12_26_9", "MACDh_12_26_9", "MACDs_12_26_9",
-        "BBL_20_2.0_2.0", "BBM_20_2.0_2.0", "BBU_20_2.0_2.0",
-        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
-        # Advanced indicators
+        # Momentum oscillators (already 0-100 or percentage-based)
+        "RSI_14",
         "STOCHk_14_3_3", "STOCHd_14_3_3",
         "ADX_14", "DMP_14", "DMN_14",
-        "ATR_14",
         "ROC_10",
         "MFI_14",
-        # Fear indicators (Layer 1-3) inspired by LosingLoonies
+        # Bollinger relative metrics (unitless)
+        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
+        # Fear indicators (index-level, comparable across tickers)
         "VIX_Close", "VIX_10d_MA", "VIX_20d_MA", "VIX_30d_MA",
-        "Fear_Greed_Proxy", "Sentiment_Score",
+        "Fear_Greed_Proxy",
     ]
     MIN_TRAIN_ROWS = 60
     HOLDOUT_ROWS = 30
@@ -79,7 +76,7 @@ class XGBoostDirection(ModelProvider):
         # Build feature matrix using only columns that exist
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
-            raise ValueError("No indicator columns found. Need at least SMA/EMA/RSI.")
+            raise ValueError("No indicator columns found. Need at least RSI/Stochastic.")
         missing = [c for c in self.FEATURE_COLS if c not in df.columns]
         if missing:
             warnings.warn(
@@ -88,7 +85,16 @@ class XGBoostDirection(ModelProvider):
                 stacklevel=2,
             )
 
+        # Normalised price-scale features + price-derived features
         feature_cols = available + [
+            # Normalised indicator ratios (from ml_features)
+            "Price_vs_SMA",
+            "Price_vs_EMA",
+            "MACD_Norm",
+            "MACDh_Norm",
+            "MACDs_Norm",
+            "ATR_Norm",
+            # Price-derived features
             "Return_1d",
             "Return_2d",
             "Return_3d",
@@ -96,7 +102,6 @@ class XGBoostDirection(ModelProvider):
             "Return_10d",
             "Return_20d",
             "Volatility_10d",
-            "Price_vs_SMA",
             "Volume_Ratio",
             "Gap_Return",
             "Daily_Range",
@@ -123,9 +128,10 @@ class XGBoostDirection(ModelProvider):
         X = model_df[feature_cols].to_numpy()
         y = model_df["Target"].astype(int).to_numpy()
 
-        # Chronological split for simple validation
+        # Chronological split for validation
         split = max(self.MIN_TRAIN_ROWS, len(X) - self.HOLDOUT_ROWS)
         X_train, y_train = X[:split], y[:split]
+        X_val, y_val = X[split:], y[split:]
 
         # Split training data further for early stopping
         es_split = int(len(X_train) * (1 - self.EARLY_STOP_FRAC))
@@ -135,25 +141,35 @@ class XGBoostDirection(ModelProvider):
         eval_model = self._build_model(early_stopping=True)
         eval_model.fit(X_fit, y_fit, eval_set=[(X_es, y_es)], verbose=False)
 
-        # Predict on labeled rows using the evaluation model
-        prob_up = eval_model.predict_proba(X)[:, 1]
-        preds = (prob_up >= 0.5).astype(int)
-
-        # Confidence should match the predicted class, not always P(Up)
-        confidence = np.where(preds == 1, prob_up, 1.0 - prob_up)
-
-        # Map predictions back onto original df
+        # =====================================================================
+        # Predictions — OUT-OF-SAMPLE ONLY to prevent data leakage
+        # =====================================================================
         df["Pred_Direction"] = np.nan        # 1 = Up, 0 = Down
         df["Pred_Probability"] = np.nan      # confidence of predicted direction
         df["Prob_Up"] = np.nan               # raw probability of Up
 
-        df.loc[model_df.index, "Pred_Direction"] = preds
-        df.loc[model_df.index, "Pred_Probability"] = confidence
-        df.loc[model_df.index, "Prob_Up"] = prob_up
+        # Predict on holdout rows only (eval_model never saw these)
+        if len(X_val) > 0:
+            val_prob_up = eval_model.predict_proba(X_val)[:, 1]
+            val_preds = (val_prob_up >= 0.5).astype(int)
+            val_confidence = np.where(val_preds == 1, val_prob_up, 1.0 - val_prob_up)
 
-        # Train a final model on all labeled data for the live next-day forecast
-        # Extract best iteration from evaluation model and apply without early stopping
-        best_n_estimators = eval_model.best_iteration + 1 if hasattr(eval_model, 'best_iteration') else config.XGB_N_ESTIMATORS
+            val_indices = model_df.index[split:]
+            df.loc[val_indices, "Pred_Direction"] = val_preds
+            df.loc[val_indices, "Pred_Probability"] = val_confidence
+            df.loc[val_indices, "Prob_Up"] = val_prob_up
+
+        # =====================================================================
+        # Final model for live next-day forecast
+        # Retrained on ALL labeled data (standard practice — we need every
+        # sample for the actual live prediction, but we don't report this
+        # model's accuracy as "validation" accuracy).
+        # =====================================================================
+        best_n_estimators = (
+            eval_model.best_iteration + 1
+            if hasattr(eval_model, "best_iteration") and eval_model.best_iteration is not None
+            else config.XGB_N_ESTIMATORS
+        )
         final_model = self._build_model(early_stopping=False, n_estimators=best_n_estimators)
         final_model.fit(X, y, verbose=False)
 
@@ -169,20 +185,23 @@ class XGBoostDirection(ModelProvider):
             df.loc[df.index[-1], "Pred_Probability"] = last_confidence
             df.loc[df.index[-1], "Prob_Up"] = last_prob_up
 
-        # Metrics for display
+        # =====================================================================
+        # Metrics — clearly separated by model
+        # =====================================================================
+        # Train accuracy: eval_model on its own training data (for monitoring only)
         train_preds = eval_model.predict(X_train)
         train_acc = float((train_preds == y_train).mean())
 
+        # Validation accuracy: eval_model on truly unseen holdout data
         val_acc = np.nan
-        if split < len(X):
-            X_val, y_val = X[split:], y[split:]
-            val_preds = eval_model.predict(X_val)
-            val_acc = float((val_preds == y_val).mean())
+        if len(X_val) > 0:
+            val_preds_check = eval_model.predict(X_val)
+            val_acc = float((val_preds_check == y_val).mean())
 
         df.attrs["train_accuracy"] = train_acc
         df.attrs["validation_accuracy"] = val_acc
         df.attrs["train_size"] = len(X_train)
-        df.attrs["test_size"] = max(0, len(X) - split)
+        df.attrs["test_size"] = len(X_val)
         df.attrs["feature_cols"] = feature_cols
 
         return df
