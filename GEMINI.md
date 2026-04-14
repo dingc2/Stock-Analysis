@@ -1,69 +1,31 @@
 # GEMINI.md - Stock Analysis Platform
 
-This project is a personal, extensible stock analysis dashboard built with Python and Streamlit. It provides interactive visualizations, 16+ technical indicators, candlestick pattern detection, and ML-powered price direction prediction using real-time and historical market data.
+Stock analysis dashboard: Python/Streamlit, 16+ technical indicators, candlestick patterns, ML price direction prediction (XGBoost + LSTM).
 
-## Project Overview
+## Architecture
 
-*   **Main Technologies:** Python (3.12+), Streamlit, pandas-ta, Plotly, yfinance, XGBoost, PyTorch (LSTM).
-*   **Architecture:**
-    *   **Data Layer (`data/`):** Uses a Strategy Pattern (`DataProvider` ABC) to allow swappable data sources. Current implementation: `yfinance_provider.py`. The data layer handles auxiliary data fetching (e.g., VIX via `include_vix` in `get_history`) to keep ML and View layers pure.
-    *   **Indicators Layer (`indicators/`):** Contains stateless pure functions for computing technical indicators (`technical.py`) and ML-specific features (`ml_features.py`). Shared between visualization and ML models to ensure feature consistency.
-    *   **Charts Layer (`charts/`):** Interactive visualizations using Plotly (candlesticks, volume profiles, etc.).
-    *   **Views (`views/`):** Modular components for Streamlit tabs (Overview, Technicals, Financials, etc.).
-    *   **ML Layer (`ml/`):** Pluggable model architecture (`ModelProvider` ABC). Includes XGBoost and LSTM direction classifiers (with dynamic epoch alignment for consistent confidence scaling). Hyperparameters are centralized in `config.py`.
+- **Data (`data/`):** `DataProvider` ABC (Strategy Pattern). Current: yfinance. VIX fetched at data layer via `include_vix=True`.
+- **Indicators (`indicators/`):** Stateless pure functions. `technical.py` (pandas-ta), `ml_features.py` (normalized ratios, returns, volatility), `composite.py` (signal scoring).
+- **Charts (`charts/`):** Plotly candlesticks, volume profiles, comparison overlays.
+- **Views (`views/`):** Streamlit tab modules, each exports `render()`.
+- **ML (`ml/`):** `ModelProvider` ABC. XGBoost + LSTM direction classifiers. Out-of-sample predictions only (no data leakage). Hyperparameters in `config.py`.
 
-## Building and Running
+## Running
 
-### Prerequisites
-- Python 3.12 or higher.
-- Docker (optional).
+```bash
+pip install -r requirements.txt
+streamlit run app.py              # http://localhost:8501
+docker compose up --build         # or via Docker
+pytest                            # full suite
+pytest -m "not slow"              # skip ML training tests
+```
 
-### Local Setup
-1.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-2.  **Run the application:**
-    ```bash
-    streamlit run app.py
-    ```
-    The app will be available at [http://localhost:8501](http://localhost:8501).
+## Development Rules
 
-### Docker Setup
-1.  **Build and start:**
-    ```bash
-    docker compose up --build
-    ```
-    The project directory is mounted as a volume for hot-reload.
-
-### Testing
-- Run tests using `pytest`:
-  ```bash
-  pytest
-  ```
-- Deselect slow tests (e.g., ML training):
-  ```bash
-  pytest -m "not slow"
-  ```
-
-## Development Conventions
-
-### Architecture & Patterns
-- **Strategy Pattern:** Implement `DataProvider` in `data/base.py` for new data sources or `ModelProvider` in `ml/base.py` for new ML models.
-- **Indicator Consistency:** Always use `indicators/technical.py` and `indicators/ml_features.py` for feature engineering in both charts and ML models.
-- **Pure Functions:** Keep indicator logic stateless and side-effect-free.
-- **Data Layer Delegation:** Auxiliary data (like VIX) is fetched at the data layer (`include_vix=True`), not inside ML models.
-- **Caching:** Use Streamlit's `@st.cache_data` with appropriate TTLs (defined in `data/cache.py`) to minimize API calls.
-
-### Coding Style
-- Follow standard Python (PEP 8) conventions.
-- Type annotations are preferred for `DataProvider` and `ModelProvider` implementations.
-- UI components should be placed in `views/` and follow the `render()` function pattern.
-
-### Key Data Structures
-- **Quote (dataclass):** Found in `data/base.py`.
-- **OHLCV DataFrame:** Standard format used across the app (Open, High, Low, Close, Volume).
-
-## Configuration
-- Default settings (ticker, periods, colors, indicator parameters) and ML hyperparameters are managed in `config.py`.
-- Data providers can be switched via the `DATA_PROVIDER` environment variable.
+- **Features:** All ML features must be unitless ratios (e.g. `Price_vs_SMA`, `ATR_Norm`), never raw prices. Computed in `indicators/ml_features.py`.
+- **Indicators:** ML models import from `indicators/technical.py` — same calculations as charts.
+- **Data leakage:** Predictions are only assigned to holdout (out-of-sample) rows. Final model retrains on all data for the live last-row forecast only.
+- **New data source:** Implement `DataProvider` in `data/base.py`, register in `data/__init__.py`.
+- **New ML model:** Implement `ModelProvider` in `ml/base.py`, register in `ml/__init__.py`.
+- **Caching:** `@st.cache_data` with TTLs in `data/cache.py`.
+- **Testing:** XGBoost tests must run before LSTM tests (BLAS conflict on macOS). Handled by `tests/ml/conftest.py`.
