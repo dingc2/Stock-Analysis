@@ -44,20 +44,31 @@ class YFinanceProvider(DataProvider):
                 vix_df = vix_t.history(period="5y", interval="1d")
                 if not vix_df.empty:
                     vix_close = vix_df["Close"].rename("VIX_Close")
-                    
-                    # Robust index alignment: strip timezones and normalize to start of day
-                    if df.index.tz is not None:
-                        df.index = df.index.tz_convert(None).normalize()
-                    else:
-                        df.index = df.index.normalize()
-                        
+
+                    # Strip timezones from VIX index and normalize to date
                     if vix_close.index.tz is not None:
                         vix_close.index = vix_close.index.tz_convert(None).normalize()
                     else:
                         vix_close.index = vix_close.index.normalize()
-                    
-                    df = df.join(vix_close, how="left")
+
+                    # Build a date-only key for the main df WITHOUT mutating its index.
+                    # This preserves intraday timestamps (5m, 15m, etc.) that would
+                    # otherwise be destroyed by .normalize().
+                    original_index = df.index
+                    if df.index.tz is not None:
+                        date_key = df.index.tz_convert(None).normalize()
+                    else:
+                        date_key = df.index.normalize()
+
+                    # Map VIX values by date
+                    vix_map = vix_close.to_dict()
+                    df["VIX_Close"] = [vix_map.get(d, float("nan")) for d in date_key]
                     df["VIX_Close"] = df["VIX_Close"].ffill()
+
+                    # Strip timezone from the main index (keeps full timestamps)
+                    if original_index.tz is not None:
+                        df.index = original_index.tz_convert(None)
+
                     df["VIX_10d_MA"] = df["VIX_Close"].rolling(10).mean()
                     df["VIX_20d_MA"] = df["VIX_Close"].rolling(20).mean()
                     df["VIX_30d_MA"] = df["VIX_Close"].rolling(30).mean()

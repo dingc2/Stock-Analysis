@@ -4,11 +4,11 @@ Stock analysis dashboard: Python/Streamlit, 16+ technical indicators, candlestic
 
 ## Architecture
 
-- **Data (`data/`):** `DataProvider` ABC (Strategy Pattern). Current: yfinance. VIX fetched at data layer via `include_vix=True`.
+- **Data (`data/`):** `DataProvider` ABC (Strategy Pattern). Current: yfinance. VIX fetched at data layer via `include_vix=True`. VIX join uses a date-only lookup key to preserve intraday timestamps.
 - **Indicators (`indicators/`):** Stateless pure functions. `technical.py` (pandas-ta), `ml_features.py` (normalized ratios, returns, volatility), `composite.py` (signal scoring).
 - **Charts (`charts/`):** Plotly candlesticks, volume profiles, comparison overlays.
 - **Views (`views/`):** Streamlit tab modules, each exports `render()`.
-- **ML (`ml/`):** `ModelProvider` ABC. XGBoost + LSTM direction classifiers. Out-of-sample predictions only (no data leakage). Hyperparameters in `config.py`.
+- **ML (`ml/`):** `ModelProvider` ABC. `direction_base.py` provides shared training/prediction logic. XGBoost + LSTM direction classifiers with session-scoped caching. Out-of-sample predictions only (no data leakage). Hyperparameters in `config.py`.
 
 ## Running
 
@@ -28,4 +28,5 @@ pytest -m "not slow"              # skip ML training tests
 - **New data source:** Implement `DataProvider` in `data/base.py`, register in `data/__init__.py`.
 - **New ML model:** Implement `ModelProvider` in `ml/base.py`, register in `ml/__init__.py`.
 - **Caching:** `@st.cache_data` with TTLs in `data/cache.py`.
+- **Intervals:** `config.INTERVAL_OPTIONS` aligned to yfinance limits: `1m` ≤ 7d, `2m`–`90m` ≤ 60d, `1d`+ unlimited. Never call `.normalize()` on `df.index` — it destroys intraday timestamps.
 - **Testing:** XGBoost tests must run before LSTM tests (BLAS conflict on macOS). Handled by `tests/ml/conftest.py`.

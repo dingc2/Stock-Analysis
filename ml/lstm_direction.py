@@ -7,7 +7,7 @@ Returns the same prediction columns as other models for UI compatibility.
 from __future__ import annotations
 
 import copy
-import warnings
+import time
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ import pandas as pd
 import config
 from indicators.technical import add_all
 from indicators.ml_features import add_ml_features
-from ml.base import ModelProvider
+from ml.direction_base import BaseDirectionModel, _dataframe_hash
 
 try:
     import torch
@@ -48,32 +48,17 @@ class _LSTMBinaryClassifier(nn.Module):
         return logits
 
 
-class LSTMDirection(ModelProvider):
+class LSTMDirection(BaseDirectionModel):
     """Predicts next-day price direction (up/down) using an LSTM."""
 
-    FEATURE_COLS = [
-        # Momentum oscillators (already 0-100 or percentage-based)
-        "RSI_14",
-        "STOCHk_14_3_3", "STOCHd_14_3_3",
-        "ADX_14", "DMP_14", "DMN_14",
-        "ROC_10",
-        "MFI_14",
-        # Bollinger relative metrics (unitless)
-        "BBB_20_2.0_2.0", "BBP_20_2.0_2.0",
-        # Fear indicators (index-level, comparable across tickers)
-        "VIX_Close", "VIX_10d_MA", "VIX_20d_MA", "VIX_30d_MA",
-        "Fear_Greed_Proxy",
-    ]
-
+    MODEL_NAME = "LSTM Direction"
+    MODEL_DESCRIPTION = "Predicts next-day price direction (up/down) using an LSTM over indicator sequences"
     MIN_TRAIN_ROWS = 120
-    HOLDOUT_ROWS = 30
     SEQ_LEN = 20
 
-    def get_name(self) -> str:
-        return "LSTM Direction"
-
-    def get_description(self) -> str:
-        return "Predicts next-day price direction (up/down) using an LSTM over indicator sequences"
+    # LSTM uses the same base + derived features as XGBoost
+    FEATURE_COLS = BaseDirectionModel.FEATURE_COLS
+    DERIVED_FEATURES = BaseDirectionModel.DERIVED_FEATURES
 
     def _build_sequences(
         self,
@@ -114,7 +99,6 @@ class LSTMDirection(ModelProvider):
         )
         criterion = nn.BCEWithLogitsLoss()
 
-        # Learning rate scheduler — reduce LR on val loss plateau
         has_val = x_val is not None and y_val is not None and len(x_val) > 0
         scheduler = None
         if has_val:
@@ -156,7 +140,6 @@ class LSTMDirection(ModelProvider):
                 with torch.no_grad():
                     val_loss = criterion(model(x_v), y_v).item()
 
-                # Step the LR scheduler
                 if scheduler is not None:
                     scheduler.step(val_loss)
 
@@ -178,145 +161,149 @@ class LSTMDirection(ModelProvider):
         model.eval()
         return model, best_epoch
 
-    def _predict_prob_up(self, model: _LSTMBinaryClassifier, x: np.ndarray) -> np.ndarray:
+    def _prob_up_from_model(self, model: _LSTMBinaryClassifier, X: np.ndarray) -> np.ndarray:
         with torch.no_grad():
-            logits = model(torch.tensor(x, dtype=torch.float32))
+            logits = model(torch.tensor(X, dtype=torch.float32))
             probs = torch.sigmoid(logits).cpu().numpy()
         return probs
 
+    def _predict_last_row(self, final_model: _LSTMBinaryClassifier, last_X: np.ndarray) -> float:
+        with torch.no_grad():
+            # last_X shape: (1, seq_len, n_features) already sequenced by caller
+            logits = final_model(torch.tensor(last_X, dtype=torch.float32))
+            return float(torch.sigmoid(logits).item())
+
+    # ------------------------------------------------------------------
+    # Override predict() — LSTM needs sequence construction + z-score norm
+    # before the chronological split.  Caching and attrs still come from
+    # the base class via super().
+    # ------------------------------------------------------------------
+
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """LSTM predict with sequence construction + z-score normalization.
+
+        Caching and shared attrs are inherited from BaseDirectionModel.
+        """
+        # Session-scoped cache
+        now = time.monotonic()
+        cache_key = _dataframe_hash(df)
+        if cache_key in self._pred_cache:
+            cached_df, cached_at = self._pred_cache[cache_key]
+            if now - cached_at < self._CACHE_TTL:
+                return cached_df.copy()
+            del self._pred_cache[cache_key]
+
         df = df.copy()
+
+        # 1. Feature engineering (shared)
         df = add_all(df, include_advanced=True)
         df = add_ml_features(df)
 
+        # 2. Build feature list
         available = [c for c in self.FEATURE_COLS if c in df.columns]
         if not available:
             raise ValueError("No indicator columns found. Need at least RSI/Stochastic.")
-        missing = [c for c in self.FEATURE_COLS if c not in df.columns]
-        if missing:
-            warnings.warn(
-                f"LSTMDirection: {len(missing)}/{len(self.FEATURE_COLS)} indicator columns "
-                f"missing ({', '.join(missing)}). Training on reduced feature set.",
-                stacklevel=2,
-            )
 
-        # Feature list matches XGBoost for parity — all normalised/unitless
-        feature_cols = available + [
-            # Normalised indicator ratios (from ml_features)
-            "Price_vs_SMA",
-            "Price_vs_EMA",
-            "MACD_Norm",
-            "MACDh_Norm",
-            "MACDs_Norm",
-            "ATR_Norm",
-            # Price-derived features (all percentage-based)
-            "Return_1d",
-            "Return_2d",
-            "Return_3d",
-            "Return_5d",
-            "Return_10d",
-            "Return_20d",
-            "Volatility_10d",
-            "Volume_Ratio",
-            "Gap_Return",
-            "Daily_Range",
-        ]
-
+        feature_cols = available + [f for f in self.DERIVED_FEATURES if f in df.columns]
         df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
 
+        # 3. Target
         next_close = df["Close"].shift(-1)
-        df["Target"] = np.where(next_close.notna(), (next_close > df["Close"]).astype(int), np.nan)
+        df["Target"] = np.where(
+            next_close.notna(),
+            (next_close > df["Close"]).astype(int),
+            np.nan,
+        )
 
+        # 4. Drop rows with NaN
         model_df = df.dropna(subset=feature_cols + ["Target"]).copy()
         if len(model_df) < self.MIN_TRAIN_ROWS:
             raise ValueError(
-                f"Need at least {self.MIN_TRAIN_ROWS} rows after indicator warm-up, got {len(model_df)}. "
-                "Try a longer period."
+                f"Need at least {self.MIN_TRAIN_ROWS} rows after indicator warm-up, "
+                f"got {len(model_df)}. Try a longer period."
             )
 
         x_raw = model_df[feature_cols].to_numpy(dtype=np.float32)
         y_raw = model_df["Target"].to_numpy(dtype=np.float32)
         row_indices = model_df.index.to_numpy()
 
-        if len(x_raw) < self.SEQ_LEN:
-            raise ValueError(f"Need at least {self.SEQ_LEN} labeled rows for LSTM sequences.")
-
+        # 5. Chronological train/val split (same logic as base, but before sequencing)
         split_row = max(self.MIN_TRAIN_ROWS, len(x_raw) - self.HOLDOUT_ROWS)
         split_row = min(split_row, len(x_raw) - 1)
 
+        # 6. Z-score normalization — fit on train portion only
         train_mean = x_raw[:split_row].mean(axis=0)
         train_std = x_raw[:split_row].std(axis=0)
         train_std = np.where(train_std < 1e-8, 1.0, train_std)
         x_scaled = (x_raw - train_mean) / train_std
 
+        # 7. Build sequences
         seq_x, seq_y, seq_idx = self._build_sequences(x_scaled, y_raw, row_indices)
         if len(seq_x) < 2:
             raise ValueError("Not enough data after sequence construction.")
 
+        # 8. Split sequences into train/val
         train_seq_mask = seq_idx < row_indices[split_row]
-        x_train, y_train = seq_x[train_seq_mask], seq_y[train_seq_mask]
-        x_val, y_val = seq_x[~train_seq_mask], seq_y[~train_seq_mask]
+        x_train_seq = seq_x[train_seq_mask]
+        y_train_seq = seq_y[train_seq_mask]
+        x_val_seq = seq_x[~train_seq_mask]
+        y_val_seq = seq_y[~train_seq_mask]
 
-        if len(x_train) < 20:
+        if len(x_train_seq) < 20:
             raise ValueError("Not enough training sequences for LSTM. Try a longer period.")
 
-        eval_model, best_epoch = self._fit_model(x_train, y_train, seed=42, x_val=x_val, y_val=y_val)
+        # 9. Train eval model with early stopping
+        eval_model, best_epoch = self._fit_model(
+            x_train_seq, y_train_seq, seed=42, x_val=x_val_seq, y_val=y_val_seq,
+        )
 
-        # =====================================================================
-        # Predictions — OUT-OF-SAMPLE ONLY to prevent data leakage
-        # =====================================================================
+        # 10. Out-of-sample predictions on holdout sequences only
         df["Pred_Direction"] = np.nan
         df["Pred_Probability"] = np.nan
         df["Prob_Up"] = np.nan
 
-        # Only predict on validation sequences (eval_model never saw these)
-        if len(x_val) > 0:
-            val_prob_up = self._predict_prob_up(eval_model, x_val)
+        if len(x_val_seq) > 0:
+            val_prob_up = self._prob_up_from_model(eval_model, x_val_seq)
             val_preds = (val_prob_up >= 0.5).astype(int)
             val_confidence = np.where(val_preds == 1, val_prob_up, 1.0 - val_prob_up)
-
             val_seq_idx = seq_idx[~train_seq_mask]
             df.loc[val_seq_idx, "Pred_Direction"] = val_preds
             df.loc[val_seq_idx, "Pred_Probability"] = val_confidence
             df.loc[val_seq_idx, "Prob_Up"] = val_prob_up
 
-        # =====================================================================
-        # Final model for live next-day forecast
-        # Retrained on ALL sequences with the same epoch count (using same
-        # seed for reproducibility).
-        # =====================================================================
+        # 11. Final model retrained on all sequences for last-row live forecast
         final_epochs = best_epoch + 1
         final_model, _ = self._fit_model(seq_x, seq_y, seed=42, epochs=final_epochs)
 
-        # Last-row prediction: check the entire sequence for NaN, not just the last row
-        all_features = df[feature_cols].to_numpy(dtype=np.float32)
+        # 12. Last-row live forecast
+        all_features = model_df[feature_cols].to_numpy(dtype=np.float32)
         all_scaled = (all_features - train_mean) / train_std
         if len(all_scaled) >= self.SEQ_LEN:
-            last_seq = all_scaled[-self.SEQ_LEN :]
+            last_seq = all_scaled[-self.SEQ_LEN:]
             if not np.isnan(last_seq).any():
-                last_seq = last_seq[None, :, :]
-                last_prob_up = float(self._predict_prob_up(final_model, last_seq)[0])
+                last_seq = last_seq[None, :, :]  # (1, seq_len, n_features)
+                last_prob_up = self._predict_last_row(final_model, last_seq)
                 last_pred = int(last_prob_up >= 0.5)
                 last_conf = last_prob_up if last_pred == 1 else 1.0 - last_prob_up
                 df.loc[df.index[-1], "Pred_Direction"] = last_pred
                 df.loc[df.index[-1], "Pred_Probability"] = last_conf
                 df.loc[df.index[-1], "Prob_Up"] = last_prob_up
 
-        # =====================================================================
-        # Metrics — clearly separated
-        # =====================================================================
-        train_preds = (self._predict_prob_up(eval_model, x_train) >= 0.5).astype(int)
-        train_acc = float((train_preds == y_train.astype(int)).mean())
+        # 13. Metrics
+        train_prob = self._prob_up_from_model(eval_model, x_train_seq)
+        train_acc = float(((train_prob >= 0.5).astype(int) == y_train_seq.astype(int)).mean())
 
         val_acc = np.nan
-        if len(x_val) > 0:
-            val_preds_check = (self._predict_prob_up(eval_model, x_val) >= 0.5).astype(int)
-            val_acc = float((val_preds_check == y_val.astype(int)).mean())
+        if len(x_val_seq) > 0:
+            val_acc = float(((val_prob_up >= 0.5).astype(int) == y_val_seq.astype(int)).mean())
 
         df.attrs["train_accuracy"] = train_acc
         df.attrs["validation_accuracy"] = val_acc
-        df.attrs["train_size"] = int(len(x_train))
-        df.attrs["test_size"] = int(len(x_val))
+        df.attrs["train_size"] = int(len(x_train_seq))
+        df.attrs["test_size"] = int(len(x_val_seq))
         df.attrs["feature_cols"] = feature_cols
+
+        # Store in session cache
+        self._pred_cache[cache_key] = (df.copy(), now)
 
         return df
