@@ -1,5 +1,13 @@
 """Streamlit entry point: page config, sidebar, tab routing."""
 
+import os
+
+# Prevent PyTorch + XGBoost BLAS segfault on macOS + Python 3.13.
+# Must be set before any native library (numpy/torch/xgboost) is loaded.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import streamlit as st
 from datetime import datetime
 from zoneinfo import ZoneInfo

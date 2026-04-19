@@ -6,13 +6,14 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta
 
+import config
+
 from data.base import DataProvider
 from data.cache import get_quote_cached, get_quote_live, get_history_cached, get_history_live
 from charts.price import create_line_chart
 from indicators import technical as ind
 from indicators.composite import compute_signal_score, get_signal_color
-from ml import get_available_models
-from views import render_timeframe_buttons
+from views import get_cached_models, render_timeframe_buttons
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ def _make_gauge(score: float, label: str) -> go.Figure:
             "axis": {
                 "range": [-100, 100],
                 "tickwidth": 1,
-                "tickcolor": "#555",
+                "tickcolor": config.COLORS["signal_bar_line"],
                 "tickvals": [-100, -50, -20, 0, 20, 50, 100],
                 "ticktext": ["-100", "-50", "-20", "0", "+20", "+50", "+100"],
             },
@@ -58,7 +59,7 @@ def _make_gauge(score: float, label: str) -> go.Figure:
         height=240,
         margin=dict(t=60, b=10, l=30, r=30),
         paper_bgcolor="rgba(0,0,0,0)",
-        font={"color": "#e0e0e0"},
+        font={"color": config.COLORS["gauge_font"]},
     )
     return fig
 
@@ -72,20 +73,20 @@ def _render_sub_score_bar(label: str, value: float | None, weight: float, displa
     if value is None or np.isnan(value):
         display = "N/A"
         bar_pct = 50            # centred
-        bar_color = "#555"
+        bar_color = config.COLORS["signal_bar_line"]
     else:
         display = display_override if display_override is not None else f"{value:+.2f}"
         bar_pct = int((value + 1) / 2 * 100)   # -1→0 %, +1→100 %
         bar_color = (
-            "#00c853" if value >= 0.2 else
-            "#d50000" if value <= -0.2 else
-            "#ffd740"
+            config.COLORS["signal_positive"] if value >= 0.2 else
+            config.COLORS["signal_negative"] if value <= -0.2 else
+            config.COLORS["signal_neutral"]
         )
 
     # Filled bar centred on zero (50 %)
     bar_html = (
-        f"<div style='background:#2a2a2a;border-radius:4px;height:10px;position:relative;'>"
-        f"<div style='position:absolute;left:50%;top:0;bottom:0;width:1px;background:#555;'></div>"
+        f"<div style='background:{config.COLORS['signal_bar_bg']};border-radius:4px;height:10px;position:relative;'>"
+        f"<div style='position:absolute;left:50%;top:0;bottom:0;width:1px;background:{config.COLORS['signal_bar_line']};'></div>"
         f"<div style='position:absolute;"
         f"{'left:50%;width:' + str(abs(bar_pct - 50)) + '%;' if bar_pct >= 50 else 'right:' + str(50 - bar_pct) + '%;left:' + str(bar_pct) + '%;width:' + str(50 - bar_pct) + '%;'}"
         f"top:0;bottom:0;background:{bar_color};border-radius:4px;'></div>"
@@ -94,20 +95,25 @@ def _render_sub_score_bar(label: str, value: float | None, weight: float, displa
 
     col_a, col_b, col_c, col_d = st.columns([2, 4, 1.2, 1])
     with col_a:
-        st.markdown(f"<div style='padding-top:2px;font-size:0.85em;color:#aaa;'>{label}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='padding-top:2px;font-size:0.85em;color:{config.COLORS['signal_label']};'>{label}</div>",
+            unsafe_allow_html=True,
+        )
     with col_b:
         st.markdown(bar_html, unsafe_allow_html=True)
     with col_c:
-        color = "#00c853" if (value is not None and not np.isnan(value) and value >= 0.2) else \
-                "#d50000" if (value is not None and not np.isnan(value) and value <= -0.2) else "#ffd740"
+        color = (
+            config.COLORS["signal_positive"] if (value is not None and not np.isnan(value) and value >= 0.2) else
+            config.COLORS["signal_negative"] if (value is not None and not np.isnan(value) and value <= -0.2) else
+            config.COLORS["signal_neutral"]
+        )
         st.markdown(
             f"<div style='text-align:right;font-size:0.85em;color:{color};font-weight:600;'>{display}</div>",
             unsafe_allow_html=True,
         )
     with col_d:
         st.markdown(
-            f"<div style='text-align:right;font-size:0.75em;color:#666;'>{int(weight*100)}%</div>",
+            f"<div style='text-align:right;font-size:0.82em;color:{config.COLORS['signal_weight']};'>{int(weight*100)}%</div>",
             unsafe_allow_html=True,
         )
 
@@ -144,7 +150,7 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
     ml_results: list[dict] = []
     ml_errors: list[str] = []
     if include_ml:
-        models = get_available_models()
+        models = get_cached_models()
         for model in models:
             try:
                 pred_df = model.predict(df)
@@ -162,8 +168,7 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
     score = float(last["Signal_Score"]) if not pd.isna(last["Signal_Score"]) else 0.0
     label = str(last["Signal_Label"]) if last["Signal_Label"] else "Neutral"
 
-    import config as cfg
-    weights = cfg.SIGNAL_WEIGHTS
+    weights = config.SIGNAL_WEIGHTS
 
     # Calculate effective weights based on available scores
     available_cols = []
@@ -175,7 +180,7 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
     
     total_available_weight = sum(weights[k] for k in available_cols)
     effective_weights = {
-        k: (weights[k] / total_available_weight) if total_available_weight > 0 else 0.0
+        k: (weights[k] / total_available_weight) if (k in available_cols and total_available_weight > 0) else 0.0
         for k in weights
     }
 
@@ -185,6 +190,7 @@ def _render_signal_section(provider: DataProvider, ticker: str, period: str, int
     with g_col:
         fig = _make_gauge(score, label)
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Score: **{score:+.0f}** — {label}")
 
     with b_col:
         st.markdown("**Score breakdown**")
@@ -316,7 +322,7 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
                 fig = create_line_chart(df, title=f"{ticker} - {period}")
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.warning("No historical data available.")
+                st.warning(f"No historical data available for **{ticker}**. Try a different ticker or wider period.")
         except Exception as e:
             st.error(f"Failed to fetch history: {e}")
 

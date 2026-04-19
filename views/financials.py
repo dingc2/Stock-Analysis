@@ -15,7 +15,7 @@ def render(provider: DataProvider, ticker: str):
         return
 
     if not info:
-        st.warning("No financial data available.")
+        st.warning(f"No financial data available for **{ticker}**. This ticker may not be supported.")
         return
 
     st.subheader(f"{info.get('shortName', ticker)} Financials")

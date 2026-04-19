@@ -95,6 +95,15 @@ COLORS = {
     "fibonacci": "#ff7f0e",
     "squeeze_on": "#ff0000",
     "squeeze_off": "#00ff00",
+    # Signal score breakdown (overview sub-score bar + gauge)
+    "signal_positive": "#00c853",
+    "signal_negative": "#d50000",
+    "signal_neutral":  "#ffd740",
+    "signal_bar_bg":   "#2a2a2a",
+    "signal_bar_line": "#555555",
+    "signal_label":    "#aaaaaa",
+    "signal_weight":   "#888888",
+    "gauge_font":      "#e0e0e0",
 }
 
 # Comparison

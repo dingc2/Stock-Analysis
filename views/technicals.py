@@ -9,8 +9,7 @@ from data.base import DataProvider
 from data.cache import get_history_cached, get_history_live
 from indicators import technical as ind
 from charts.price import create_candlestick
-from ml import get_available_models
-from views import render_timeframe_buttons
+from views import get_cached_models, render_timeframe_buttons
 
 
 def render(provider: DataProvider, ticker: str, period: str, interval: str):
@@ -102,7 +101,7 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
             return
 
         if df.empty:
-            st.warning("No historical data available.")
+            st.warning(f"No historical data available for **{ticker}**. Try a different ticker or wider period.")
             return
 
         df = df.copy()
@@ -142,9 +141,13 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
         sr_levels = ind.detect_support_resistance(df) if show_sr else None
         fib_levels = ind.compute_fibonacci_levels(df) if show_fib else None
 
-        # --- Render chart ---
+        # --- Render chart (display only — ML and indicators use full df) ---
+        MAX_CANDLES = 500
+        df_display = df.tail(MAX_CANDLES) if len(df) > MAX_CANDLES else df
+        if len(df) > MAX_CANDLES:
+            st.caption(f"Showing most recent {MAX_CANDLES} of {len(df)} bars.")
         fig = create_candlestick(
-            df,
+            df_display,
             title=f"{ticker} - {period}",
             show_sma=show_sma, show_ema=show_ema,
             show_bollinger=show_bollinger, show_rsi=show_rsi, show_macd=show_macd,
@@ -175,48 +178,55 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
             st.caption(f"Bollinger Squeeze: {'**ACTIVE** - volatility compression detected' if squeeze_active else 'Not active'}")
 
         # --- ML model overlay hook ---
-        models = get_available_models()
+        models = get_cached_models()
         if models:
             st.subheader("ML Predictions")
-            for model in models:
-                with st.expander(f"{model.get_name()} - {model.get_description()}", expanded=True):
+            with st.spinner("Running ML predictions…"):
+                model_results = []
+                for model in models:
                     try:
                         prediction_df = model.predict(df)
-
-                        last = prediction_df.iloc[-1]
-                        pred_dir = last.get("Pred_Direction")
-                        pred_prob = last.get("Pred_Probability")
-
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            if pred_dir is not None and not pd.isna(pred_dir):
-                                direction = "Up" if pred_dir == 1 else "Down"
-                                st.metric("Next-Day Prediction", direction)
-                            else:
-                                st.metric("Next-Day Prediction", "N/A")
-                        with col2:
-                            if pred_prob is not None and not pd.isna(pred_prob):
-                                st.metric("Confidence", f"{pred_prob:.1%}")
-                            else:
-                                st.metric("Confidence", "N/A")
-                        with col3:
-                            train_acc = prediction_df.attrs.get("train_accuracy")
-                            if train_acc is not None:
-                                st.metric("Train Accuracy", f"{train_acc:.1%}")
-
-                        display_cols = ["Close", "Pred_Direction", "Pred_Probability"]
-                        display_cols = [c for c in display_cols if c in prediction_df.columns]
-                        recent = prediction_df[display_cols].tail(10).copy()
-                        if "Pred_Direction" in recent.columns:
-                            recent["Pred_Direction"] = recent["Pred_Direction"].map(
-                                {1.0: "Up", 0.0: "Down"}
-                            )
-                        if "Pred_Probability" in recent.columns:
-                            recent["Pred_Probability"] = recent["Pred_Probability"].apply(
-                                lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
-                            )
-                        st.dataframe(recent, use_container_width=True)
+                        model_results.append((model, prediction_df, None))
                     except Exception as e:
-                        st.error(f"Model error: {e}")
+                        model_results.append((model, None, e))
+            for model, prediction_df, err in model_results:
+                with st.expander(f"{model.get_name()} - {model.get_description()}", expanded=True):
+                    if err is not None:
+                        st.error(f"Model error: {err}")
+                        continue
+
+                    last = prediction_df.iloc[-1]
+                    pred_dir = last.get("Pred_Direction")
+                    pred_prob = last.get("Pred_Probability")
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if pred_dir is not None and not pd.isna(pred_dir):
+                            direction = "Up" if pred_dir == 1 else "Down"
+                            st.metric("Next-Day Prediction", direction)
+                        else:
+                            st.metric("Next-Day Prediction", "N/A")
+                    with col2:
+                        if pred_prob is not None and not pd.isna(pred_prob):
+                            st.metric("Confidence", f"{pred_prob:.1%}")
+                        else:
+                            st.metric("Confidence", "N/A")
+                    with col3:
+                        train_acc = prediction_df.attrs.get("train_accuracy")
+                        if train_acc is not None:
+                            st.metric("Train Accuracy", f"{train_acc:.1%}")
+
+                    display_cols = ["Close", "Pred_Direction", "Pred_Probability"]
+                    display_cols = [c for c in display_cols if c in prediction_df.columns]
+                    recent = prediction_df[display_cols].tail(10).copy()
+                    if "Pred_Direction" in recent.columns:
+                        recent["Pred_Direction"] = recent["Pred_Direction"].map(
+                            {1.0: "Up", 0.0: "Down"}
+                        )
+                    if "Pred_Probability" in recent.columns:
+                        recent["Pred_Probability"] = recent["Pred_Probability"].apply(
+                            lambda x: f"{x:.1%}" if pd.notna(x) else "N/A"
+                        )
+                    st.dataframe(recent, use_container_width=True)
 
     chart_section()

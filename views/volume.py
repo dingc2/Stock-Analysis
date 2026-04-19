@@ -34,7 +34,7 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
             return
 
         if df.empty:
-            st.warning("No historical data available.")
+            st.warning(f"No historical data available for **{ticker}**. Try a different ticker or wider period.")
             return
 
         # Volume bars with MA overlay

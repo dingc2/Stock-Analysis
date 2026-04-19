@@ -59,7 +59,7 @@ def render(provider: DataProvider, ticker: str, period: str, interval: str):
                 st.warning(f"Failed to fetch {t}: {e}")
 
         if len(ticker_data) < 2:
-            st.warning("Need data for at least 2 tickers to compare.")
+            st.warning("Need data for at least 2 tickers to compare. Check that your tickers are valid.")
             return
 
         fig = create_comparison_chart(ticker_data, title=f"Normalized Comparison - {period}")
